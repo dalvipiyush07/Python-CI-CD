@@ -1,0 +1,219 @@
+pipeline {
+    agent any
+
+    environment {
+        SSH_CRED = 'node-app-key'
+        SERVER_IP = '172.31.15.241'
+        REMOTE_USER = 'ubuntu'
+        APP_DIR = '/home/ubuntu/pythonapp'
+        PORT = '8888'
+    }
+
+    stages {
+        stage('Clone Repository') {
+            steps {
+                git branch: 'master', 
+                url: 'https://github.com/Maheshshelke05/pythonapp.git',
+                credentialsId: "${SSH_CRED}"
+            }
+        }
+
+        stage('Verify Files') {
+            steps {
+                sh '''
+                    echo "📁 Checking project files..."
+                    ls -la
+                    echo "✅ Files verified"
+                '''
+            }
+        }
+
+        stage('Deploy to Server') {
+            steps {
+                sshagent(credentials: ["${SSH_CRED}"]) {
+                    sh """
+                        echo "🚀 Starting deployment to ${SERVER_IP}"
+                        
+                        # Create application directory
+                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${SERVER_IP} "mkdir -p ${APP_DIR}"
+                        
+                        # Copy application files
+                        scp -o StrictHostKeyChecking=no -r app.py requirements.txt ${REMOTE_USER}@${SERVER_IP}:${APP_DIR}/
+                        
+                        echo "✅ Files copied successfully"
+                    """
+                }
+            }
+        }
+
+        stage('Setup Environment') {
+            steps {
+                sshagent(["${SSH_CRED}"]) {
+                    sh """
+                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${SERVER_IP} '
+                            echo "🐍 Setting up Python environment..."
+                            
+                            cd ${APP_DIR}
+                            
+                            # Update system and install Python
+                            sudo apt update -y
+                            sudo apt install -y python3 python3-pip python3-venv
+                            
+                            # Create virtual environment
+                            python3 -m venv venv
+                            source venv/bin/activate
+                            
+                            # Install dependencies
+                            pip install --upgrade pip
+                            pip install -r requirements.txt
+                            
+                            echo "✅ Environment setup completed"
+                        '
+                    """
+                }
+            }
+        }
+
+        stage('Stop Existing App') {
+            steps {
+                sshagent(["${SSH_CRED}"]) {
+                    sh """
+                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${SERVER_IP} '
+                            echo "🛑 Stopping existing application..."
+                            
+                            # Find and kill existing Tornado processes
+                            pkill -f "python3 app.py" || true
+                            sleep 3
+                            
+                            # Double check and force kill if needed
+                            pgrep -f "python3 app.py" && pkill -9 -f "python3 app.py" || true
+                            
+                            echo "✅ Existing app stopped"
+                        '
+                    """
+                }
+            }
+        }
+
+        stage('Start Application') {
+            steps {
+                sshagent(["${SSH_CRED}"]) {
+                    sh """
+                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${SERVER_IP} '
+                            echo "🚀 Starting Tornado application..."
+                            
+                            cd ${APP_DIR}
+                            source venv/bin/activate
+                            
+                            # Start the application in background
+                            nohup python3 app.py > app.log 2>&1 &
+                            
+                            echo "✅ Application started in background"
+                            echo "📝 Logs available at: ${APP_DIR}/app.log"
+                        '
+                    """
+                }
+            }
+        }
+
+        stage('Verify Deployment') {
+            steps {
+                sshagent(["${SSH_CRED}"]) {
+                    sh """
+                        echo "🔍 Verifying deployment..."
+                        
+                        # Wait for app to start
+                        sleep 10
+                        
+                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${SERVER_IP} '
+                            cd ${APP_DIR}
+                            
+                            echo "📊 Deployment Verification:"
+                            echo "=========================="
+                            
+                            # Check if process is running
+                            if pgrep -f "python3 app.py" > /dev/null; then
+                                echo "✅ Process is running"
+                            else
+                                echo "❌ Process is not running"
+                                echo "=== Application Logs ==="
+                                cat app.log || echo "No logs available"
+                                exit 1
+                            fi
+                            
+                            # Check application logs for success message
+                            if grep -q "Tornado running on" app.log; then
+                                echo "✅ Application started successfully"
+                            else
+                                echo "❌ Application startup not confirmed"
+                                echo "=== Last 20 lines of log ==="
+                                tail -20 app.log
+                                exit 1
+                            fi
+                            
+                            # Test health endpoint
+                            if curl -f -s http://localhost:${PORT}/api/health > /dev/null; then
+                                echo "✅ Health check passed"
+                            else
+                                echo "❌ Health check failed"
+                                exit 1
+                            fi
+                            
+                            # Test main page
+                            if curl -f -s http://localhost:${PORT}/ > /dev/null; then
+                                echo "✅ Main page is accessible"
+                            else
+                                echo "❌ Main page is not accessible"
+                                exit 1
+                            fi
+                            
+                            echo "🎉 All verification tests passed!"
+                        '
+                    """
+                }
+            }
+        }
+
+        stage('Final Checks') {
+            steps {
+                sshagent(["${SSH_CRED}"]) {
+                    sh """
+                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${SERVER_IP} '
+                            echo "📋 Final application status:"
+                            echo "==========================="
+                            ps aux | grep "python3 app.py" | grep -v grep
+                            echo ""
+                            echo "🌐 Application URL: http://${SERVER_IP}:${PORT}"
+                            echo "🔧 Health check: http://${SERVER_IP}:${PORT}/api/health"
+                            netstat -tlnp | grep :${PORT} || echo "Port ${PORT} not found (may be starting)"
+                        '
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            echo "📦 Build completed: ${currentBuild.result}"
+        }
+        success {
+            echo "🎉 Deployment completed successfully!"
+            sh """
+                echo "🌐 Your application is now live at: http://${SERVER_IP}:${PORT}"
+                echo "💬 Features available:"
+                echo "   • Home page: http://${SERVER_IP}:${PORT}/"
+                echo "   • Contact form: http://${SERVER_IP}:${PORT}/contact"
+                echo "   • Live chat: http://${SERVER_IP}:${PORT}/chat"
+                echo "   • Health API: http://${SERVER_IP}:${PORT}/api/health"
+                echo "   • Submissions: http://${SERVER_IP}:${PORT}/submissions"
+            """
+        }
+        failure {
+            echo "❌ Deployment failed! Check the logs above for details."
+        }
+        unstable {
+            echo "⚠️ Deployment completed with warnings"
+        }
+    }
+}
