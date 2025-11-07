@@ -23,13 +23,6 @@ pipeline {
                 sh '''
                     echo "📁 Checking project files..."
                     ls -la
-                    echo "🔍 Checking for requirement files..."
-                    if [ -f "requirements.txt" ]; then
-                        echo "✅ Found requirements.txt"
-                    else
-                        echo "❌ No requirements.txt found!"
-                        exit 1
-                    fi
                     echo "✅ Files verified"
                 '''
             }
@@ -39,16 +32,10 @@ pipeline {
             steps {
                 sshagent(credentials: ["${SSH_CRED}"]) {
                     sh """
-                        echo "🚀 Starting deployment to ${SERVER_IP}"
-                        
-                        # Create application directory
-                        ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${REMOTE_USER}@${SERVER_IP} "mkdir -p ${APP_DIR}"
-                        
-                        # Copy application files
-                        echo "📦 Copying application files..."
-                        scp -o StrictHostKeyChecking=no -o ConnectTimeout=30 app.py requirements.txt ${REMOTE_USER}@${SERVER_IP}:${APP_DIR}/
-                        
-                        echo "✅ Files copied successfully"
+                        echo "🚀 Deploying to ${SERVER_IP}"
+                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${SERVER_IP} "mkdir -p ${APP_DIR}"
+                        scp -o StrictHostKeyChecking=no app.py requirements.txt ${REMOTE_USER}@${SERVER_IP}:${APP_DIR}/
+                        echo "✅ Files deployed"
                     """
                 }
             }
@@ -58,20 +45,12 @@ pipeline {
             steps {
                 sshagent(["${SSH_CRED}"]) {
                     sh """
-                        ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${REMOTE_USER}@${SERVER_IP} '
-                            echo "🐍 Setting up Python environment..."
-                            
+                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${SERVER_IP} '
                             cd ${APP_DIR}
-                            
-                            # Create virtual environment
                             python3 -m venv venv
-                            source venv/bin/activate
-                            
-                            # Install dependencies
-                            pip install --upgrade pip
+                            . venv/bin/activate
                             pip install -r requirements.txt
-                            
-                            echo "✅ Environment setup completed"
+                            echo "✅ Environment ready"
                         '
                     """
                 }
@@ -82,19 +61,11 @@ pipeline {
             steps {
                 sshagent(["${SSH_CRED}"]) {
                     sh """
-                        # Use a simpler approach with timeout
-                        timeout 30 ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 ${REMOTE_USER}@${SERVER_IP} '
-                            echo "🛑 Stopping existing application..."
-                            
-                            # Kill any Python app processes
-                            sudo pkill -f "python3.*app.py" || true
+                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${SERVER_IP} '
+                            pkill -f "python3 app.py" || true
                             sleep 2
-                            
-                            # Force kill if still running
-                            sudo pkill -9 -f "python3.*app.py" || true
-                            
-                            echo "✅ Cleanup completed"
-                        ' || echo "⚠️ SSH command completed (may have been killed)"
+                            echo "✅ Apps stopped"
+                        '
                     """
                 }
             }
@@ -104,24 +75,11 @@ pipeline {
             steps {
                 sshagent(["${SSH_CRED}"]) {
                     sh """
-                        ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${REMOTE_USER}@${SERVER_IP} '
-                            echo "🚀 Starting Tornado application..."
-                            
+                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${SERVER_IP} '
                             cd ${APP_DIR}
-                            source venv/bin/activate
-                            
-                            # Kill any remaining processes first
-                            sudo pkill -f "python3.*app.py" || true
-                            sleep 2
-                            
-                            # Start the application
+                            . venv/bin/activate
                             nohup python3 app.py > app.log 2>&1 &
-                            
-                            # Save PID
-                            echo $! > app.pid
-                            
-                            echo "✅ Application started with PID: $(cat app.pid)"
-                            echo "📝 Logs available at: ${APP_DIR}/app.log"
+                            echo "✅ App started"
                         '
                     """
                 }
@@ -132,85 +90,14 @@ pipeline {
             steps {
                 sshagent(["${SSH_CRED}"]) {
                     sh """
-                        echo "🔍 Verifying deployment..."
-                        
-                        # Wait for app to start
-                        sleep 15
-                        
-                        ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${REMOTE_USER}@${SERVER_IP} '
-                            cd ${APP_DIR}
-                            
-                            echo "📊 Deployment Verification:"
-                            echo "=========================="
-                            
-                            # Check if process is running
-                            if ps -p $(cat app.pid 2>/dev/null) > /dev/null 2>&1; then
-                                echo "✅ Process is running (PID: $(cat app.pid))"
+                        sleep 10
+                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${SERVER_IP} '
+                            if curl -s http://localhost:${PORT}/api/health > /dev/null; then
+                                echo "✅ Health check passed"
                             else
-                                echo "❌ Process is not running"
-                                echo "=== Checking all Python processes ==="
-                                ps aux | grep python3 | grep -v grep || echo "No Python processes found"
-                                echo "=== Application Logs ==="
-                                tail -50 app.log || echo "No logs available"
+                                echo "❌ Health check failed"
                                 exit 1
                             fi
-                            
-                            # Check application logs for success message
-                            if tail -10 app.log | grep -q "Tornado running on"; then
-                                echo "✅ Tornado startup confirmed in logs"
-                            else
-                                echo "❌ Tornado startup not found in logs"
-                                echo "=== Last 20 lines of log ==="
-                                tail -20 app.log
-                                exit 1
-                            fi
-                            
-                            # Test health endpoint with retry
-                            for i in {1..5}; do
-                                if curl -f -s http://localhost:${PORT}/api/health > /dev/null; then
-                                    echo "✅ Health check passed (attempt $i)"
-                                    break
-                                else
-                                    echo "⚠️ Health check attempt $i failed, retrying..."
-                                    sleep 3
-                                fi
-                            done
-            
-                            if curl -f -s http://localhost:${PORT}/api/health; then
-                                echo "✅ Health endpoint is working"
-                            else
-                                echo "❌ Health endpoint failed after retries"
-                                exit 1
-                            fi
-                            
-                            echo "🎉 All verification tests passed!"
-                        '
-                    """
-                }
-            }
-        }
-
-        stage('Final Checks') {
-            steps {
-                sshagent(["${SSH_CRED}"]) {
-                    sh """
-                        ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${REMOTE_USER}@${SERVER_IP} '
-                            echo "📋 Final application status:"
-                            echo "==========================="
-                            echo "🌐 Application URL: http://${SERVER_IP}:${PORT}"
-                            echo "🔧 Health check: http://${SERVER_IP}:${PORT}/api/health"
-                            
-                            # Show process info
-                            echo "🖥️  Process info:"
-                            ps -p $(cat ${APP_DIR}/app.pid 2>/dev/null) || echo "Process not found"
-                            
-                            # Show port info
-                            echo "🔌 Port info:"
-                            netstat -tlnp | grep :${PORT} || echo "Port ${PORT} not listening"
-                            
-                            # Show recent logs
-                            echo "📝 Recent logs:"
-                            tail -5 ${APP_DIR}/app.log || echo "No logs available"
                         '
                     """
                 }
@@ -219,36 +106,11 @@ pipeline {
     }
 
     post {
-        always {
-            echo "📦 Build completed: ${currentBuild.result}"
-        }
         success {
-            echo "🎉 Deployment completed successfully!"
-            sh """
-                echo "🌐 Your application is now live at: http://${SERVER_IP}:${PORT}"
-                echo "💬 Features available:"
-                echo "   • Home page: http://${SERVER_IP}:${PORT}/"
-                echo "   • Contact form: http://${SERVER_IP}:${PORT}/contact"
-                echo "   • Live chat: http://${SERVER_IP}:${PORT}/chat"
-                echo "   • Health API: http://${SERVER_IP}:${PORT}/api/health"
-                echo "   • Submissions: http://${SERVER_IP}:${PORT}/submissions"
-            """
+            echo "🎉 Success! App running at: http://${SERVER_IP}:${PORT}"
         }
         failure {
-            echo "❌ Deployment failed! Check the logs above for details."
-            // Attempt cleanup on failure
-            sshagent(["${SSH_CRED}"]) {
-                sh """
-                    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 ${REMOTE_USER}@${SERVER_IP} '
-                        echo "🧹 Cleaning up after failed deployment..."
-                        sudo pkill -f "python3.*app.py" || true
-                        echo "✅ Cleanup completed"
-                    ' || echo "⚠️ Cleanup SSH failed, continuing..."
-                """
-            }
-        }
-        unstable {
-            echo "⚠️ Deployment completed with warnings"
+            echo "❌ Deployment failed"
         }
     }
 }
