@@ -23,6 +23,17 @@ pipeline {
                 sh '''
                     echo "📁 Checking project files..."
                     ls -la
+                    echo "🔍 Checking for requirement files..."
+                    # Check both possible filenames
+                    if [ -f "requirements.txt" ]; then
+                        echo "✅ Found requirements.txt"
+                    elif [ -f "requirement.txt" ]; then
+                        echo "✅ Found requirement.txt - copying to requirements.txt"
+                        cp requirement.txt requirements.txt
+                    else
+                        echo "❌ No requirements file found!"
+                        exit 1
+                    fi
                     echo "✅ Files verified"
                 '''
             }
@@ -37,8 +48,15 @@ pipeline {
                         # Create application directory
                         ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${SERVER_IP} "mkdir -p ${APP_DIR}"
                         
-                        # Copy application files
-                        scp -o StrictHostKeyChecking=no -r app.py requirements.txt ${REMOTE_USER}@${SERVER_IP}:${APP_DIR}/
+                        # Copy application files - handle both requirement filenames
+                        if [ -f "requirements.txt" ]; then
+                            echo "📦 Copying requirements.txt"
+                            scp -o StrictHostKeyChecking=no app.py requirements.txt ${REMOTE_USER}@${SERVER_IP}:${APP_DIR}/
+                        else
+                            echo "📦 Copying requirement.txt as requirements.txt"
+                            scp -o StrictHostKeyChecking=no app.py ${REMOTE_USER}@${SERVER_IP}:${APP_DIR}/
+                            scp -o StrictHostKeyChecking=no requirement.txt ${REMOTE_USER}@${SERVER_IP}:${APP_DIR}/requirements.txt
+                        fi
                         
                         echo "✅ Files copied successfully"
                     """
