@@ -1,49 +1,108 @@
 pipeline {
-    agent any
-
-    environment {
-        SSH_CRED = 'node-app-key'
-        SERVER_IP = '3.110.168.120'
-        REMOTE_USER = 'ubuntu'
-        APP_DIR = '/home/ubuntu/pythonapp'
+  agent any
+  environment {
+    REMOTE_HOST = "3.110.168.120"
+    REMOTE_USER = "ubuntu"
+    REMOTE_DIR  = "/home/ubuntu/pythonapp"
+  }
+  stages {
+    stage('Clone Repository') {
+      steps {
+        git url: 'https://github.com/dalvipiyush07/Python-CI-CD.git', branch: 'main', credentialsId: 'node-app-key'
+      }
     }
 
-    stages {
-        stage('Clone Repo') {
-            steps {
-                git url: 'https://github.com/dalvipiyush07/Python-CI-CD.git', branch: 'main'
-            }
-        }
-
-        stage('Deploy to Server') {
-            steps {
-                sshagent(credentials: ["${SSH_CRED}"]) {
-                    sh '''
-                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${SERVER_IP} "mkdir -p ${APP_DIR}"
-                        scp -r Dockerfile README.md app.py requirements.txt test ${REMOTE_USER}@${SERVER_IP}:${APP_DIR}/
-                    '''
-                }
-            }
-        }
-
-        stage('Install & Run App') {
-            steps {
-                sshagent(["${SSH_CRED}"]) {
-                    sh """
-                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${SERVER_IP} '
-                            sudo apt update &&
-                            sudo apt install -y python3-venv python3-pip &&
-                            cd ${APP_DIR} &&
-                            python3 -m venv venv &&
-                            source venv/bin/activate &&
-                            pip install --upgrade pip &&
-                            pip install -r requirements.txt &&
-                            nohup python3 app.py --host=0.0.0.0 > app.log 2>&1 &
-                            exit 0
-                        '
-                    """
-                }
-            }
-        }
+    stage('Verify Files') {
+      steps {
+        sh 'ls -la'
+      }
     }
+
+    stage('Deploy to Server') {
+      steps {
+        sshagent (credentials: ['node-app-key']) {
+          sh """
+            echo "Creating remote dir..."
+            ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} "mkdir -p ${REMOTE_DIR}" || { echo "mkdir failed"; exit 1; }
+            scp -o StrictHostKeyChecking=no app.py requirements.txt ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/ || { echo "scp failed"; exit 1; }
+          """
+        }
+      }
+    }
+
+    stage('Setup Environment') {
+      steps {
+        sshagent (credentials: ['node-app-key']) {
+          // capture remote output to workspace file
+          sh '''
+            ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} <<'REMOTE' > setup_output.txt 2>&1
+            set -x
+            cd ${REMOTE_DIR}
+            python3 -m venv venv
+            . venv/bin/activate
+            pip install -r requirements.txt
+            echo "✅ Environment ready"
+            REMOTE
+            echo "---- remote setup output ----"
+            cat setup_output.txt || true
+          '''
+        }
+      }
+    }
+
+    stage('Stop Existing App') {
+      steps {
+        sshagent (credentials: ['node-app-key']) {
+          script {
+            // run remote command and capture exit code
+            def status = sh(returnStatus: true, script: """
+              ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} 'pkill -f "python3 app.py" || true; sleep 2; echo "✅ Apps stop attempted"'
+            """)
+            if (status != 0) {
+              error("Stop Existing App stage failed (ssh returned ${status}) - check network/keys")
+            } else {
+              echo "Stop Existing App completed"
+            }
+          }
+        }
+      }
+    }
+
+    stage('Start Application') {
+      steps {
+        sshagent (credentials: ['node-app-key']) {
+          sh '''
+            ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} <<'REMOTE' > start_output.txt 2>&1
+            set -x
+            cd ${REMOTE_DIR}
+            . venv/bin/activate
+            nohup python3 app.py > app.log 2>&1 &
+            echo "✅ App started (nohup) - PID: $(pgrep -f 'python3 app.py' || echo N/A)"
+            REMOTE
+            echo "---- remote start output ----"
+            cat start_output.txt || true
+          '''
+        }
+      }
+    }
+
+    stage('Verify Deployment') {
+      steps {
+        sshagent (credentials: ['node-app-key']) {
+          sh '''
+            ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} "curl -sSf http://127.0.0.1:8000/ || (echo 'Health check failed' && exit 1)"
+          '''
+        }
+      }
+    }
+  }
+
+  post {
+    failure {
+      echo "❌ Deployment failed"
+    }
+    success {
+      echo "✅ Deployment succeeded"
+    }
+  }
 }
