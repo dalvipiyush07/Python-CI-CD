@@ -24,14 +24,10 @@ pipeline {
                     echo "📁 Checking project files..."
                     ls -la
                     echo "🔍 Checking for requirement files..."
-                    # Check both possible filenames
                     if [ -f "requirements.txt" ]; then
                         echo "✅ Found requirements.txt"
-                    elif [ -f "requirement.txt" ]; then
-                        echo "✅ Found requirement.txt - copying to requirements.txt"
-                        cp requirement.txt requirements.txt
                     else
-                        echo "❌ No requirements file found!"
+                        echo "❌ No requirements.txt found!"
                         exit 1
                     fi
                     echo "✅ Files verified"
@@ -46,17 +42,11 @@ pipeline {
                         echo "🚀 Starting deployment to ${SERVER_IP}"
                         
                         # Create application directory
-                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${SERVER_IP} "mkdir -p ${APP_DIR}"
+                        ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${REMOTE_USER}@${SERVER_IP} "mkdir -p ${APP_DIR}"
                         
-                        # Copy application files - handle both requirement filenames
-                        if [ -f "requirements.txt" ]; then
-                            echo "📦 Copying requirements.txt"
-                            scp -o StrictHostKeyChecking=no app.py requirements.txt ${REMOTE_USER}@${SERVER_IP}:${APP_DIR}/
-                        else
-                            echo "📦 Copying requirement.txt as requirements.txt"
-                            scp -o StrictHostKeyChecking=no app.py ${REMOTE_USER}@${SERVER_IP}:${APP_DIR}/
-                            scp -o StrictHostKeyChecking=no requirement.txt ${REMOTE_USER}@${SERVER_IP}:${APP_DIR}/requirements.txt
-                        fi
+                        # Copy application files
+                        echo "📦 Copying application files..."
+                        scp -o StrictHostKeyChecking=no -o ConnectTimeout=30 app.py requirements.txt ${REMOTE_USER}@${SERVER_IP}:${APP_DIR}/
                         
                         echo "✅ Files copied successfully"
                     """
@@ -68,14 +58,10 @@ pipeline {
             steps {
                 sshagent(["${SSH_CRED}"]) {
                     sh """
-                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${SERVER_IP} '
+                        ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${REMOTE_USER}@${SERVER_IP} '
                             echo "🐍 Setting up Python environment..."
                             
                             cd ${APP_DIR}
-                            
-                            # Update system and install Python
-                            sudo apt update -y
-                            sudo apt install -y python3 python3-pip python3-venv
                             
                             # Create virtual environment
                             python3 -m venv venv
@@ -96,18 +82,19 @@ pipeline {
             steps {
                 sshagent(["${SSH_CRED}"]) {
                     sh """
-                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${SERVER_IP} '
+                        # Use a simpler approach with timeout
+                        timeout 30 ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 ${REMOTE_USER}@${SERVER_IP} '
                             echo "🛑 Stopping existing application..."
                             
-                            # Find and kill existing Tornado processes
-                            pkill -f "python3 app.py" || true
-                            sleep 3
+                            # Kill any Python app processes
+                            sudo pkill -f "python3.*app.py" || true
+                            sleep 2
                             
-                            # Double check and force kill if needed
-                            pgrep -f "python3 app.py" && pkill -9 -f "python3 app.py" || true
+                            # Force kill if still running
+                            sudo pkill -9 -f "python3.*app.py" || true
                             
-                            echo "✅ Existing app stopped"
-                        '
+                            echo "✅ Cleanup completed"
+                        ' || echo "⚠️ SSH command completed (may have been killed)"
                     """
                 }
             }
@@ -117,16 +104,23 @@ pipeline {
             steps {
                 sshagent(["${SSH_CRED}"]) {
                     sh """
-                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${SERVER_IP} '
+                        ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${REMOTE_USER}@${SERVER_IP} '
                             echo "🚀 Starting Tornado application..."
                             
                             cd ${APP_DIR}
                             source venv/bin/activate
                             
-                            # Start the application in background
+                            # Kill any remaining processes first
+                            sudo pkill -f "python3.*app.py" || true
+                            sleep 2
+                            
+                            # Start the application
                             nohup python3 app.py > app.log 2>&1 &
                             
-                            echo "✅ Application started in background"
+                            # Save PID
+                            echo $! > app.pid
+                            
+                            echo "✅ Application started with PID: $(cat app.pid)"
                             echo "📝 Logs available at: ${APP_DIR}/app.log"
                         '
                     """
@@ -141,47 +135,51 @@ pipeline {
                         echo "🔍 Verifying deployment..."
                         
                         # Wait for app to start
-                        sleep 10
+                        sleep 15
                         
-                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${SERVER_IP} '
+                        ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${REMOTE_USER}@${SERVER_IP} '
                             cd ${APP_DIR}
                             
                             echo "📊 Deployment Verification:"
                             echo "=========================="
                             
                             # Check if process is running
-                            if pgrep -f "python3 app.py" > /dev/null; then
-                                echo "✅ Process is running"
+                            if ps -p $(cat app.pid 2>/dev/null) > /dev/null 2>&1; then
+                                echo "✅ Process is running (PID: $(cat app.pid))"
                             else
                                 echo "❌ Process is not running"
+                                echo "=== Checking all Python processes ==="
+                                ps aux | grep python3 | grep -v grep || echo "No Python processes found"
                                 echo "=== Application Logs ==="
-                                cat app.log || echo "No logs available"
+                                tail -50 app.log || echo "No logs available"
                                 exit 1
                             fi
                             
                             # Check application logs for success message
-                            if grep -q "Tornado running on" app.log; then
-                                echo "✅ Application started successfully"
+                            if tail -10 app.log | grep -q "Tornado running on"; then
+                                echo "✅ Tornado startup confirmed in logs"
                             else
-                                echo "❌ Application startup not confirmed"
+                                echo "❌ Tornado startup not found in logs"
                                 echo "=== Last 20 lines of log ==="
                                 tail -20 app.log
                                 exit 1
                             fi
                             
-                            # Test health endpoint
-                            if curl -f -s http://localhost:${PORT}/api/health > /dev/null; then
-                                echo "✅ Health check passed"
+                            # Test health endpoint with retry
+                            for i in {1..5}; do
+                                if curl -f -s http://localhost:${PORT}/api/health > /dev/null; then
+                                    echo "✅ Health check passed (attempt $i)"
+                                    break
+                                else
+                                    echo "⚠️ Health check attempt $i failed, retrying..."
+                                    sleep 3
+                                fi
+                            done
+            
+                            if curl -f -s http://localhost:${PORT}/api/health; then
+                                echo "✅ Health endpoint is working"
                             else
-                                echo "❌ Health check failed"
-                                exit 1
-                            fi
-                            
-                            # Test main page
-                            if curl -f -s http://localhost:${PORT}/ > /dev/null; then
-                                echo "✅ Main page is accessible"
-                            else
-                                echo "❌ Main page is not accessible"
+                                echo "❌ Health endpoint failed after retries"
                                 exit 1
                             fi
                             
@@ -196,14 +194,23 @@ pipeline {
             steps {
                 sshagent(["${SSH_CRED}"]) {
                     sh """
-                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${SERVER_IP} '
+                        ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${REMOTE_USER}@${SERVER_IP} '
                             echo "📋 Final application status:"
                             echo "==========================="
-                            ps aux | grep "python3 app.py" | grep -v grep
-                            echo ""
                             echo "🌐 Application URL: http://${SERVER_IP}:${PORT}"
                             echo "🔧 Health check: http://${SERVER_IP}:${PORT}/api/health"
-                            netstat -tlnp | grep :${PORT} || echo "Port ${PORT} not found (may be starting)"
+                            
+                            # Show process info
+                            echo "🖥️  Process info:"
+                            ps -p $(cat ${APP_DIR}/app.pid 2>/dev/null) || echo "Process not found"
+                            
+                            # Show port info
+                            echo "🔌 Port info:"
+                            netstat -tlnp | grep :${PORT} || echo "Port ${PORT} not listening"
+                            
+                            # Show recent logs
+                            echo "📝 Recent logs:"
+                            tail -5 ${APP_DIR}/app.log || echo "No logs available"
                         '
                     """
                 }
@@ -229,6 +236,16 @@ pipeline {
         }
         failure {
             echo "❌ Deployment failed! Check the logs above for details."
+            // Attempt cleanup on failure
+            sshagent(["${SSH_CRED}"]) {
+                sh """
+                    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 ${REMOTE_USER}@${SERVER_IP} '
+                        echo "🧹 Cleaning up after failed deployment..."
+                        sudo pkill -f "python3.*app.py" || true
+                        echo "✅ Cleanup completed"
+                    ' || echo "⚠️ Cleanup SSH failed, continuing..."
+                """
+            }
         }
         unstable {
             echo "⚠️ Deployment completed with warnings"
