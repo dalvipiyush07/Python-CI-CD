@@ -6,111 +6,44 @@ pipeline {
         SERVER_IP = '3.110.168.120'
         REMOTE_USER = 'ubuntu'
         APP_DIR = '/home/ubuntu/pythonapp'
-        PORT = '8888'
     }
 
     stages {
-        stage('Clone Repository') {
+        stage('Clone Repo') {
             steps {
-                git branch: 'main', 
-                url: 'https://github.com/dalvipiyush07/Python-CI-CD.git',
-                credentialsId: "${SSH_CRED}"
-            }
-        }
-
-        stage('Verify Files') {
-            steps {
-                sh '''
-                    echo "📁 Checking project files..."
-                    ls -la
-                    echo "✅ Files verified"
-                '''
+                git url: 'https://github.com/dalvipiyush07/Python-CI-CD.git', branch: 'main'
             }
         }
 
         stage('Deploy to Server') {
             steps {
                 sshagent(credentials: ["${SSH_CRED}"]) {
-                    sh """
-                        echo "🚀 Deploying to ${SERVER_IP}"
+                    sh '''
                         ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${SERVER_IP} "mkdir -p ${APP_DIR}"
-                        scp -o StrictHostKeyChecking=no app.py requirements.txt ${REMOTE_USER}@${SERVER_IP}:${APP_DIR}/
-                        echo "✅ Files deployed"
-                    """
+                        scp -r Dockerfile README.md app.py requirements.txt test ${REMOTE_USER}@${SERVER_IP}:${APP_DIR}/
+                    '''
                 }
             }
         }
 
-        stage('Setup Environment') {
+        stage('Install & Run App') {
             steps {
                 sshagent(["${SSH_CRED}"]) {
                     sh """
                         ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${SERVER_IP} '
-                            cd ${APP_DIR}
-                            python3 -m venv venv
-                            . venv/bin/activate
-                            pip install -r requirements.txt
-                            echo "✅ Environment ready"
+                            sudo apt update &&
+                            sudo apt install -y python3-venv python3-pip &&
+                            cd ${APP_DIR} &&
+                            python3 -m venv venv &&
+                            source venv/bin/activate &&
+                            pip install --upgrade pip &&
+                            pip install -r requirements.txt &&
+                            nohup python3 app.py --host=0.0.0.0 > app.log 2>&1 &
+                            exit 0
                         '
                     """
                 }
             }
-        }
-
-        stage('Stop Existing App') {
-            steps {
-                sshagent(["${SSH_CRED}"]) {
-                    sh """
-                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${SERVER_IP} '
-                            pkill -f "python3 app.py" || true
-                            sleep 2
-                            echo "✅ Apps stopped"
-                        '
-                    """
-                }
-            }
-        }
-
-        stage('Start Application') {
-            steps {
-                sshagent(["${SSH_CRED}"]) {
-                    sh """
-                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${SERVER_IP} '
-                            cd ${APP_DIR}
-                            . venv/bin/activate
-                            nohup python3 app.py > app.log 2>&1 &
-                            echo "✅ App started"
-                        '
-                    """
-                }
-            }
-        }
-
-        stage('Verify Deployment') {
-            steps {
-                sshagent(["${SSH_CRED}"]) {
-                    sh """
-                        sleep 10
-                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${SERVER_IP} '
-                            if curl -s http://localhost:${PORT}/api/health > /dev/null; then
-                                echo "✅ Health check passed"
-                            else
-                                echo "❌ Health check failed"
-                                exit 1
-                            fi
-                        '
-                    """
-                }
-            }
-        }
-    }
-
-    post {
-        success {
-            echo "🎉 Success! App running at: http://${SERVER_IP}:${PORT}"
-        }
-        failure {
-            echo "❌ Deployment failed"
         }
     }
 }
