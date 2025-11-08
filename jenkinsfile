@@ -2,7 +2,7 @@ pipeline {
     agent any
     
     environment {
-        REMOTE_HOST = "13.204.86.75"
+        REMOTE_HOST = "3.110.168.120"
         REMOTE_USER = "ubuntu"
         REMOTE_DIR = "/home/ubuntu/learnhub-app"
         APP_PORT = "5000"
@@ -65,8 +65,8 @@ pipeline {
                 echo 'Setting up Python virtual environment on remote server...'
                 sshagent(credentials: ['node-app-key']) {
                     sh '''
-                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} <<'REMOTE' > setup_output.txt 2>&1
-                        set -x
+                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} <<'REMOTE'
+                        set -e
                         cd ${REMOTE_DIR}
                         
                         # Remove old venv if exists
@@ -87,8 +87,6 @@ pipeline {
                         
                         echo "✅ Environment setup completed"
 REMOTE
-                        echo "---- Remote Setup Output ----"
-                        cat setup_output.txt || true
                     '''
                 }
             }
@@ -98,31 +96,30 @@ REMOTE
             steps {
                 echo 'Stopping existing application instances...'
                 sshagent(credentials: ['node-app-key']) {
-                    script {
-                        def status = sh(returnStatus: true, script: """
-                            ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} '
-                                echo "Checking for running app processes..."
-                                pgrep -f "python.*app.py" && echo "Found running processes" || echo "No processes found"
-                                
-                                echo "Stopping application..."
+                    sh """
+                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} '
+                            echo "Checking for running app processes..."
+                            if pgrep -f "python.*app.py" > /dev/null 2>&1; then
+                                echo "Found running processes, stopping them..."
                                 pkill -f "python.*app.py" || true
-                                
-                                # Wait for processes to stop
                                 sleep 3
                                 
                                 # Force kill if still running
-                                pkill -9 -f "python.*app.py" || true
+                                if pgrep -f "python.*app.py" > /dev/null 2>&1; then
+                                    echo "Force killing remaining processes..."
+                                    pkill -9 -f "python.*app.py" || true
+                                    sleep 2
+                                fi
                                 
-                                echo "✅ Application stop attempted"
-                            '
-                        """)
-                        
-                        if (status != 0) {
-                            error("❌ Stop Existing App stage failed (ssh returned ${status})")
-                        } else {
-                            echo "✅ Stop Existing App completed successfully"
-                        }
-                    }
+                                echo "✅ Application stopped"
+                            else
+                                echo "No running application found"
+                            fi
+                            
+                            # Always exit successfully
+                            exit 0
+                        ' || { echo "✅ Stop attempted (ignore errors)"; exit 0; }
+                    """
                 }
             }
         }
@@ -132,8 +129,8 @@ REMOTE
                 echo 'Starting the Flask application...'
                 sshagent(credentials: ['node-app-key']) {
                     sh '''
-                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} <<'REMOTE' > start_output.txt 2>&1
-                        set -x
+                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} <<'REMOTE'
+                        set -e
                         cd ${REMOTE_DIR}
                         
                         # Activate virtual environment
@@ -152,10 +149,8 @@ REMOTE
                         
                         # Show last few lines of log
                         echo "---- Application Log (last 10 lines) ----"
-                        tail -n 10 app.log || echo "No logs yet"
+                        tail -n 10 app.log 2>/dev/null || echo "No logs yet"
 REMOTE
-                        echo "---- Remote Start Output ----"
-                        cat start_output.txt || true
                     '''
                 }
             }
