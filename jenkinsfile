@@ -1,257 +1,212 @@
 pipeline {
-    agent any
-    
-    environment {
-        REMOTE_HOST = "13.204.86.75"
-        REMOTE_USER = "ubuntu"
-        REMOTE_DIR = "/home/ubuntu/learnhub-app"
-        
+  agent any
+
+  environment {
+    REMOTE_HOST = "13.204.86.75"
+    REMOTE_USER = "ubuntu"
+    REMOTE_DIR  = "/home/ubuntu/learnhub-app"
+    APP_PORT    = '5000'
+    PYTHON      = "${REMOTE_DIR}/venv/bin/python3"
+    GUNICORN    = "${REMOTE_DIR}/venv/bin/gunicorn"
+    # Optional: set number of gunicorn workers
+    GUNICORN_WORKERS = '2'
+  }
+
+  options {
+    timeout(time: 20, unit: 'MINUTES')
+    buildDiscarder(logRotator(daysToKeepStr: '14', numToKeepStr: '20'))
+    ansiColor('xterm')
+  }
+
+  stages {
+    stage('Clone') {
+      steps {
+        echo 'Cloning repository from GitHub...'
+        git url: 'https://github.com/dalvipiyush07/Python-CI-CD.git', branch: 'main', credentialsId: 'node-app-key'
+      }
     }
-    
-    stages {
-        stage('Clone Repository') {
-            steps {
-                echo 'Cloning repository from GitHub...'
-                git url: 'https://github.com/dalvipiyush07/Python-CI-CD.git', 
-                    branch: 'main', 
-                    credentialsId: 'node-app-key'
-            }
-        }
-        
-        stage('Verify Files') {
-            steps {
-                echo 'Verifying project files...'
-                sh '''
-                    ls -la
-                    echo "Checking required files..."
-                    test -f app.py && echo "✓ app.py found" || echo "✗ app.py missing"
-                    test -f requirements.txt && echo "✓ requirements.txt found" || echo "✗ requirements.txt missing"
-                '''
-            }
-        }
-        
-        stage('Code Quality Check') {
-            steps {
-                echo 'Running code quality checks...'
-                sh '''
-                    python3 -m pip install flake8 --user || true
-                    python3 -m flake8 app.py --max-line-length=120 --ignore=E501,W503 || true
-                    echo "✅ Code quality check completed"
-                '''
-            }
-        }
-        
-        stage('Deploy to Server') {
-            steps {
-                echo 'Deploying files to remote server...'
-                sshagent(credentials: ['node-app-key']) {
-                    sh """
-                        echo "Creating remote directory..."
-                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} \
-                            "mkdir -p ${REMOTE_DIR}" || { echo "❌ mkdir failed"; exit 1; }
-                        
-                        echo "Copying application files..."
-                        scp -o StrictHostKeyChecking=no app.py requirements.txt \
-                            ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/ || { echo "❌ scp failed"; exit 1; }
-                        
-                        echo "✅ Files deployed successfully"
-                    """
-                }
-            }
-        }
-        
-        stage('Setup Environment') {
-            steps {
-                echo 'Setting up Python virtual environment on remote server...'
-                sshagent(credentials: ['node-app-key']) {
-                    sh """
-                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} '
-                            set -e
-                            cd ${REMOTE_DIR}
-                            
-                            echo "Current directory: \$(pwd)"
-                            echo "Files in directory:"
-                            ls -la
-                            
-                            # Remove old venv if exists
-                            if [ -d "venv" ]; then
-                                echo "Removing old virtual environment..."
-                                rm -rf venv
-                            fi
-                            
-                            # Create new virtual environment
-                            echo "Creating virtual environment..."
-                            python3 -m venv venv
-                            
-                            # Activate and install dependencies
-                            echo "Installing dependencies..."
-                            . venv/bin/activate
-                            pip install --upgrade pip
-                            pip install -r requirements.txt
-                            
-                            echo "✅ Environment setup completed"
-                        '
-                    """
-                }
-            }
-        }
-        
-        stage('Stop Existing App') {
-            steps {
-                echo 'Stopping existing application instances...'
-                sshagent(credentials: ['node-app-key']) {
-                    sh """
-                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} '
-                            echo "Checking for running app processes..."
-                            if pgrep -f "python.*app.py" > /dev/null 2>&1; then
-                                echo "Found running processes, stopping them..."
-                                pkill -f "python.*app.py" || true
-                                sleep 3
-                                
-                                # Force kill if still running
-                                if pgrep -f "python.*app.py" > /dev/null 2>&1; then
-                                    echo "Force killing remaining processes..."
-                                    pkill -9 -f "python.*app.py" || true
-                                    sleep 2
-                                fi
-                                
-                                echo "✅ Application stopped"
-                            else
-                                echo "No running application found"
-                            fi
-                            
-                            # Always exit successfully
-                            exit 0
-                        ' || { echo "✅ Stop attempted (ignore errors)"; exit 0; }
-                    """
-                }
-            }
-        }
-        
-        stage('Start Application') {
-            steps {
-                echo 'Starting the Flask application...'
-                sshagent(credentials: ['node-app-key']) {
-                    sh """
-                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} '
-                            set -e
-                            cd ${REMOTE_DIR}
-                            
-                            # Activate virtual environment
-                            . venv/bin/activate
-                            
-                            # Start application in background
-                            echo "Starting Flask application on port ${APP_PORT}..."
-                            nohup python3 app.py > app.log 2>&1 &
-                            
-                            # Wait a bit for app to start
-                            sleep 5
-                            
-                            # Get PID
-                            APP_PID=\$(pgrep -f "python.*app.py" || echo "N/A")
-                            echo "✅ Application started - PID: \$APP_PID"
-                            
-                            # Show last few lines of log
-                            echo "---- Application Log (last 10 lines) ----"
-                            tail -n 10 app.log 2>/dev/null || echo "No logs yet"
-                        '
-                    """
-                }
-            }
-        }
-        
-        stage('Verify Deployment') {
-            steps {
-                echo 'Verifying application deployment...'
-                sshagent(credentials: ['node-app-key']) {
-                    sh '''
-                        echo "Waiting for application to be ready..."
-                        sleep 5
-                        
-                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} "
-                            echo 'Testing application health...'
-                            
-                            # Check if process is running
-                            if pgrep -f 'python.*app.py' > /dev/null; then
-                                echo '✓ Application process is running'
-                            else
-                                echo '✗ Application process not found'
-                                exit 1
-                            fi
-                            
-                            # Check if port is listening
-                            if netstat -tuln | grep -q ':${APP_PORT}'; then
-                                echo '✓ Application is listening on port ${APP_PORT}'
-                            else
-                                echo '✗ Port ${APP_PORT} is not listening'
-                                exit 1
-                            fi
-                            
-                            # HTTP health check
-                            echo 'Performing HTTP health check...'
-                            curl -sSf http://127.0.0.1:${APP_PORT}/ > /dev/null || {
-                                echo '❌ HTTP health check failed'
-                                echo 'Application logs:'
-                                tail -n 20 ${REMOTE_DIR}/app.log || true
-                                exit 1
-                            }
-                            
-                            echo '✅ Application is running and responding correctly'
-                        "
-                    '''
-                }
-            }
-        }
-        
-        stage('Display Application Info') {
-            steps {
-                echo 'Displaying application information...'
-                sshagent(credentials: ['node-app-key']) {
-                    sh """
-                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} '
-                            echo "=========================================="
-                            echo "Application Information"
-                            echo "=========================================="
-                            echo "URL: http://${REMOTE_HOST}:${APP_PORT}"
-                            echo "Remote Path: ${REMOTE_DIR}"
-                            echo "PID: \$(pgrep -f "python.*app.py" || echo "N/A")"
-                            echo "Port: ${APP_PORT}"
-                            echo "=========================================="
-                        '
-                    """
-                }
-            }
-        }
+
+    stage('Verify Files') {
+      steps {
+        echo 'Verifying project files...'
+        sh 'ls -la || true'
+        sh "test -f app.py && echo '✓ app.py found' || { echo '✗ app.py missing'; exit 1; }"
+        sh "test -f requirements.txt && echo '✓ requirements.txt found' || { echo '✗ requirements.txt missing'; exit 1; }"
+      }
     }
-    
-    post {
-        always {
-            echo 'Pipeline execution completed'
-        }
-        success {
-            echo '✅ =========================================='
-            echo '✅ Deployment succeeded!'
-            echo '✅ Application URL: http://${REMOTE_HOST}:${APP_PORT}'
-            echo '✅ =========================================='
-        }
-        failure {
-            echo '❌ =========================================='
-            echo '❌ Deployment failed!'
-            echo '❌ Check the logs above for details'
-            echo '❌ =========================================='
-            
-            // Optionally collect logs on failure
-            sshagent(credentials: ['node-app-key']) {
-                sh """
-                    echo "Collecting error logs..."
-                    ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} '
-                        if [ -f ${REMOTE_DIR}/app.log ]; then
-                            echo "---- Application Logs ----"
-                            tail -n 50 ${REMOTE_DIR}/app.log || true
-                        fi
-                    ' || true
-                """
-            }
-        }
+
+    stage('Lint') {
+      steps {
+        echo 'Running lint checks (best-effort)...'
+        sh '''
+          python3 -m pip install --user flake8 || true
+          python3 -m flake8 app.py --max-line-length=120 --ignore=E501,W503 || true
+          echo '✅ Lint completed (non-blocking)'
+        '''
+      }
     }
+
+    stage('Deploy Files') {
+      steps {
+        echo 'Copying files to remote host...'
+        sshagent(credentials: ['node-app-key']) {
+          sh """
+            scp -o StrictHostKeyChecking=no app.py requirements.txt ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/ || { echo '❌ scp failed'; exit 1; }
+          """
+        }
+      }
+    }
+
+    stage('Prepare Remote') {
+      steps {
+        echo 'Preparing remote environment (venv, packages, essentials)...'
+        sshagent(credentials: ['node-app-key']) {
+          sh """
+            ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} 'bash -s' <<'EOF'
+              set -e
+              sudo apt-get update -y || true
+              # Ensure essential tools exist (ss comes with iproute2, curl required for health checks)
+              sudo apt-get install -y --no-install-recommends iproute2 curl || true
+
+              mkdir -p ${REMOTE_DIR}
+              cd ${REMOTE_DIR}
+
+              # recreate venv to avoid stale environments
+              if [ -d venv ]; then rm -rf venv; fi
+              python3 -m venv venv
+              ./venv/bin/python3 -m pip install --upgrade pip
+              ./venv/bin/python3 -m pip install -r requirements.txt
+
+              echo '✅ Remote preparation done'
+            EOF
+          """
+        }
+      }
+    }
+
+    stage('Stop App (if any)') {
+      steps {
+        echo 'Stopping any existing app processes...'
+        sshagent(credentials: ['node-app-key']) {
+          sh """
+            ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} 'bash -s' <<'EOF'
+              set -e || true
+              if pgrep -f "python.*app.py|gunicorn" > /dev/null 2>&1; then
+                pkill -f "python.*app.py|gunicorn" || true
+                sleep 2
+              fi
+              echo '✅ Stop attempted'
+            EOF
+          """
+        }
+      }
+    }
+
+    stage('Start App') {
+      steps {
+        echo 'Starting application (uses venv python by default; will fallback to gunicorn if requested)...'
+        sshagent(credentials: ['node-app-key']) {
+          sh """
+            ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} 'bash -s' <<'EOF'
+              set -e
+              cd ${REMOTE_DIR}
+
+              # Prefer gunicorn if installed (production-like), else fallback to venv python
+              if [ -x "${GUNICORN}" ]; then
+                echo "Starting with gunicorn: ${GUNICORN} -w ${GUNICORN_WORKERS} -b 0.0.0.0:${APP_PORT} app:app"
+                nohup ${GUNICORN} -w ${GUNICORN_WORKERS} -b 0.0.0.0:${APP_PORT} app:app > app.log 2>&1 &
+              else
+                echo "Starting with venv python: ${PYTHON} app.py"
+                nohup ${PYTHON} app.py > app.log 2>&1 &
+              fi
+
+              sleep 4
+              echo "PID(s):"
+              ps aux | egrep "python.*app.py|gunicorn" | grep -v grep || true
+              echo '---- tail app.log (last 10) ----'
+              tail -n 10 app.log || true
+            EOF
+          """
+        }
+      }
+    }
+
+    stage('Verify') {
+      steps {
+        echo 'Verifying app is listening and healthy...'
+        sshagent(credentials: ['node-app-key']) {
+          sh """
+            ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} 'bash -s' <<'EOF'
+              set -e
+
+              # check process
+              if ! pgrep -f 'python.*app.py|gunicorn' > /dev/null; then
+                echo '✗ Application process not found'
+                tail -n 200 app.log || true
+                exit 1
+              fi
+              echo '✓ Process running'
+
+              # check port using ss
+              if ss -tuln | grep -q ':${APP_PORT}'; then
+                echo '✓ Port ${APP_PORT} listening'
+              else
+                echo '✗ Port ${APP_PORT} not listening'
+                tail -n 200 app.log || true
+                exit 1
+              fi
+
+              # health endpoint test (localhost)
+              if curl -sSf http://127.0.0.1:${APP_PORT}/ >/dev/null; then
+                echo '✓ HTTP health check passed'
+              else
+                echo '✗ HTTP health check failed'
+                tail -n 200 app.log || true
+                exit 1
+              fi
+
+              echo '✅ Verification complete'
+            EOF
+          """
+        }
+      }
+    }
+
+    stage('Display Info') {
+      steps {
+        echo 'App info:'
+        sshagent(credentials: ['node-app-key']) {
+          sh """
+            ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} 'bash -s' <<'EOF'
+              echo "URL: http://${REMOTE_HOST}:${APP_PORT}"
+              echo "PID(s):"
+              pgrep -a -f "python.*app.py|gunicorn" || true
+              echo "Last 100 lines of logs:"
+              tail -n 100 app.log || true
+            EOF
+          """
+        }
+      }
+    }
+  }
+
+  post {
+    always {
+      echo 'Pipeline done'
+    }
+    success {
+      echo "✅ Deployment successful — http://${REMOTE_HOST}:${APP_PORT}"
+    }
+    failure {
+      echo '❌ Deployment failed — collecting logs...'
+      sshagent(credentials: ['node-app-key']) {
+        sh """
+          ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} 'bash -s' <<'EOF'
+            echo '---- app.log ----'
+            [ -f app.log ] && tail -n 500 app.log || echo 'No app.log'
+          EOF
+        """
+      }
+    }
+  }
 }
