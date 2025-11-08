@@ -14,7 +14,7 @@ pipeline {
     options {
         timeout(time: 20, unit: 'MINUTES')
         buildDiscarder(logRotator(daysToKeepStr: '14', numToKeepStr: '20'))
-        ansiColor('xterm')
+        // ansiColor removed — enable it only if AnsiColor plugin is installed
     }
 
     stages {
