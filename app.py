@@ -1,1169 +1,1359 @@
+from flask import Flask, render_template_string, request, jsonify
 import os
-import tornado.ioloop
-import tornado.web
-import tornado.websocket
-import json
-import logging
-from datetime import datetime
-from typing import List, Dict, Set
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+app = Flask(__name__)
 
-# In-memory storage
-contact_submissions: List[Dict] = []
-websocket_clients: Set[tornado.websocket.WebSocketHandler] = set()
-
-class MainHandler(tornado.web.RequestHandler):
-    def get(self):
-        html = """
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Tornado Web App</title>
-            <style>
-                * { margin: 0; padding: 0; box-sizing: border-box; }
-                body { 
-                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                    min-height: 100vh;
-                    padding: 20px;
-                }
-                .container {
-                    max-width: 1200px;
-                    margin: 0 auto;
-                    background: white;
-                    border-radius: 15px;
-                    box-shadow: 0 20px 40px rgba(0,0,0,0.1);
-                    overflow: hidden;
-                }
-                nav {
-                    background: #2c3e50;
-                    padding: 20px;
-                    display: flex;
-                    justify-content: center;
-                    flex-wrap: wrap;
-                    gap: 15px;
-                }
-                nav a {
-                    color: white;
-                    text-decoration: none;
-                    padding: 12px 24px;
-                    border-radius: 25px;
-                    transition: all 0.3s ease;
-                    background: rgba(255,255,255,0.1);
-                }
-                nav a:hover {
-                    background: rgba(255,255,255,0.2);
-                    transform: translateY(-2px);
-                }
-                .hero {
-                    padding: 60px 40px;
-                    text-align: center;
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                    color: white;
-                }
-                .hero h1 {
-                    font-size: 3em;
-                    margin-bottom: 20px;
-                    font-weight: 300;
-                }
-                .hero p {
-                    font-size: 1.2em;
-                    opacity: 0.9;
-                    max-width: 600px;
-                    margin: 0 auto 30px;
-                }
-                .features {
-                    display: grid;
-                    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-                    gap: 30px;
-                    padding: 50px 40px;
-                    background: white;
-                }
-                .feature-card {
-                    background: #f8f9fa;
-                    padding: 30px;
-                    border-radius: 10px;
-                    text-align: center;
-                    transition: transform 0.3s ease;
-                    border: 1px solid #e9ecef;
-                }
-                .feature-card:hover {
-                    transform: translateY(-5px);
-                    box-shadow: 0 10px 25px rgba(0,0,0,0.1);
-                }
-                .feature-card h3 {
-                    color: #2c3e50;
-                    margin-bottom: 15px;
-                    font-size: 1.4em;
-                }
-                .feature-card p {
-                    color: #6c757d;
-                    line-height: 1.6;
-                }
-                .stats {
-                    background: #2c3e50;
-                    color: white;
-                    padding: 40px;
-                    display: flex;
-                    justify-content: space-around;
-                    flex-wrap: wrap;
-                    gap: 20px;
-                }
-                .stat-item {
-                    text-align: center;
-                }
-                .stat-number {
-                    font-size: 2.5em;
-                    font-weight: bold;
-                    display: block;
-                }
-                .stat-label {
-                    opacity: 0.8;
-                    font-size: 0.9em;
-                }
-                .btn {
-                    display: inline-block;
-                    background: #3498db;
-                    color: white;
-                    padding: 15px 30px;
-                    text-decoration: none;
-                    border-radius: 25px;
-                    font-weight: bold;
-                    transition: all 0.3s ease;
-                    border: none;
-                    cursor: pointer;
-                    font-size: 1em;
-                }
-                .btn:hover {
-                    background: #2980b9;
-                    transform: translateY(-2px);
-                    box-shadow: 0 5px 15px rgba(0,0,0,0.2);
-                }
-                @media (max-width: 768px) {
-                    .hero h1 { font-size: 2em; }
-                    nav { flex-direction: column; align-items: center; }
-                    nav a { width: 200px; text-align: center; }
-                }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <nav>
-                    <a href="/">🏠 Home</a>
-                    <a href="/contact">📞 Contact</a>
-                    <a href="/chat">💬 Live Chat</a>
-                    <a href="/api/health">🔧 API Health</a>
-                    <a href="/submissions">📊 Submissions</a>
-                </nav>
-                
-                <div class="hero">
-                    <h1>🚀 Tornado Web App</h1>
-                    <p>A fully functional web application built with Python Tornado featuring real-time chat, contact forms, and RESTful APIs.</p>
-                    <a href="/chat" class="btn">Start Chatting</a>
-                </div>
-                
-                <div class="features">
-                    <div class="feature-card">
-                        <h3>💬 Real-time Chat</h3>
-                        <p>Experience seamless real-time communication with WebSocket technology. Chat with multiple users simultaneously.</p>
-                    </div>
-                    <div class="feature-card">
-                        <h3>📝 Contact Forms</h3>
-                        <p>Beautiful and functional contact forms with validation and in-memory storage. Perfect for user feedback.</p>
-                    </div>
-                    <div class="feature-card">
-                        <h3>🔧 REST API</h3>
-                        <p>Health check endpoints and JSON APIs. Monitor your application status and integrate with other services.</p>
-                    </div>
-                    <div class="feature-card">
-                        <h3>⚡ High Performance</h3>
-                        <p>Built on Tornado's asynchronous networking library for high performance and scalability.</p>
-                    </div>
-                </div>
-                
-                <div class="stats">
-                    <div class="stat-item">
-                        <span class="stat-number" id="chatUsers">0</span>
-                        <span class="stat-label">Active Chat Users</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-number" id="submissionsCount">0</span>
-                        <span class="stat-label">Contact Submissions</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-number">100%</span>
-                        <span class="stat-label">Uptime</span>
-                    </div>
-                </div>
-            </div>
-
-            <script>
-                // Update stats dynamically
-                async function updateStats() {
-                    try {
-                        const response = await fetch('/api/health');
-                        const data = await response.json();
-                        document.getElementById('chatUsers').textContent = data.websocket_clients_count;
-                        document.getElementById('submissionsCount').textContent = data.contact_submissions_count;
-                    } catch (error) {
-                        console.log('Stats update failed:', error);
-                    }
-                }
-                
-                // Update stats every 10 seconds
-                updateStats();
-                setInterval(updateStats, 10000);
-            </script>
-        </body>
-        </html>
-        """
-        self.write(html)
-
-class ContactHandler(tornado.web.RequestHandler):
-    def get(self):
-        html = """
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Contact Us - Tornado Web App</title>
-            <style>
-                * { margin: 0; padding: 0; box-sizing: border-box; }
-                body { 
-                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                    min-height: 100vh;
-                    padding: 20px;
-                }
-                .container {
-                    max-width: 800px;
-                    margin: 0 auto;
-                    background: white;
-                    border-radius: 15px;
-                    box-shadow: 0 20px 40px rgba(0,0,0,0.1);
-                    overflow: hidden;
-                }
-                nav {
-                    background: #2c3e50;
-                    padding: 20px;
-                    display: flex;
-                    justify-content: center;
-                    flex-wrap: wrap;
-                    gap: 15px;
-                }
-                nav a {
-                    color: white;
-                    text-decoration: none;
-                    padding: 12px 24px;
-                    border-radius: 25px;
-                    transition: all 0.3s ease;
-                    background: rgba(255,255,255,0.1);
-                }
-                nav a:hover {
-                    background: rgba(255,255,255,0.2);
-                    transform: translateY(-2px);
-                }
-                .content {
-                    padding: 50px;
-                }
-                h1 {
-                    color: #2c3e50;
-                    text-align: center;
-                    margin-bottom: 40px;
-                    font-size: 2.5em;
-                    font-weight: 300;
-                }
-                .form-group {
-                    margin-bottom: 25px;
-                }
-                label {
-                    display: block;
-                    margin-bottom: 8px;
-                    font-weight: 600;
-                    color: #2c3e50;
-                }
-                input, textarea {
-                    width: 100%;
-                    padding: 15px;
-                    border: 2px solid #e9ecef;
-                    border-radius: 8px;
-                    font-size: 16px;
-                    transition: border-color 0.3s ease;
-                }
-                input:focus, textarea:focus {
-                    outline: none;
-                    border-color: #3498db;
-                }
-                textarea {
-                    resize: vertical;
-                    min-height: 120px;
-                }
-                .btn {
-                    background: #3498db;
-                    color: white;
-                    padding: 15px 40px;
-                    border: none;
-                    border-radius: 25px;
-                    font-size: 16px;
-                    font-weight: bold;
-                    cursor: pointer;
-                    transition: all 0.3s ease;
-                    display: block;
-                    width: 200px;
-                    margin: 30px auto 0;
-                }
-                .btn:hover {
-                    background: #2980b9;
-                    transform: translateY(-2px);
-                    box-shadow: 0 5px 15px rgba(0,0,0,0.2);
-                }
-                .success-message {
-                    background: #d4edda;
-                    color: #155724;
-                    padding: 20px;
-                    border-radius: 8px;
-                    text-align: center;
-                    margin-bottom: 30px;
-                    border: 1px solid #c3e6cb;
-                }
-                @media (max-width: 768px) {
-                    .content { padding: 30px 20px; }
-                    nav { flex-direction: column; align-items: center; }
-                    nav a { width: 200px; text-align: center; }
-                }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <nav>
-                    <a href="/">🏠 Home</a>
-                    <a href="/contact">📞 Contact</a>
-                    <a href="/chat">💬 Live Chat</a>
-                    <a href="/api/health">🔧 API Health</a>
-                    <a href="/submissions">📊 Submissions</a>
-                </nav>
-                
-                <div class="content">
-                    <h1>📞 Contact Us</h1>
-                    <form method="POST">
-                        <div class="form-group">
-                            <label for="name">Full Name:</label>
-                            <input type="text" id="name" name="name" required placeholder="Enter your full name">
-                        </div>
-                        <div class="form-group">
-                            <label for="email">Email Address:</label>
-                            <input type="email" id="email" name="email" required placeholder="Enter your email address">
-                        </div>
-                        <div class="form-group">
-                            <label for="message">Your Message:</label>
-                            <textarea id="message" name="message" required placeholder="Tell us what's on your mind..."></textarea>
-                        </div>
-                        <button type="submit" class="btn">Send Message</button>
-                    </form>
-                </div>
-            </div>
-        </body>
-        </html>
-        """
-        self.write(html)
-    
-    def post(self):
-        try:
-            name = self.get_body_argument("name", "").strip()
-            email = self.get_body_argument("email", "").strip()
-            message = self.get_body_argument("message", "").strip()
-            
-            if not all([name, email, message]):
-                self.set_status(400)
-                self.write("All fields are required")
-                return
-            
-            submission = {
-                "id": len(contact_submissions) + 1,
-                "name": name,
-                "email": email,
-                "message": message,
-                "timestamp": datetime.now().isoformat(),
-                "ip": self.request.remote_ip
+# HTML template
+HTML_TEMPLATE = '''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LearnHub - Create & Sell Online Courses</title>
+    <style>
+        :root {
+            --primary: #6c63ff;
+            --secondary: #4d44db;
+            --dark: #2a2a72;
+            --light: #f8f9fa;
+            --accent: #ff7d00;
+            --success: #28a745;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Poppins', sans-serif;
+        }
+        
+        @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
+        
+        body {
+            background-color: var(--light);
+            color: #333;
+            line-height: 1.6;
+        }
+        
+        header {
+            background: linear-gradient(135deg, var(--dark), var(--secondary));
+            color: white;
+            padding: 2rem 0;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .header-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .logo {
+            font-size: 1.8rem;
+            font-weight: 700;
+            color: white;
+            text-decoration: none;
+        }
+        
+        .logo span {
+            color: var(--accent);
+        }
+        
+        nav ul {
+            display: flex;
+            list-style: none;
+        }
+        
+        nav ul li {
+            margin-left: 2rem;
+        }
+        
+        nav ul li a {
+            color: white;
+            text-decoration: none;
+            font-weight: 500;
+            transition: color 0.3s ease;
+        }
+        
+        nav ul li a:hover {
+            color: var(--accent);
+        }
+        
+        .mobile-menu-btn {
+            display: none;
+            background: none;
+            border: none;
+            color: white;
+            font-size: 1.5rem;
+            cursor: pointer;
+        }
+        
+        .hero {
+            padding: 5rem 0;
+            text-align: center;
+        }
+        
+        .hero-content {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        
+        h1 {
+            font-size: 3rem;
+            margin-bottom: 1.5rem;
+            line-height: 1.2;
+        }
+        
+        .hero p {
+            font-size: 1.2rem;
+            margin-bottom: 2rem;
+            opacity: 0.9;
+        }
+        
+        .cta-button {
+            display: inline-block;
+            background-color: var(--accent);
+            color: white;
+            padding: 0.8rem 2rem;
+            border-radius: 50px;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 1.1rem;
+            transition: all 0.3s ease;
+            margin: 0.5rem;
+            border: none;
+            cursor: pointer;
+        }
+        
+        .cta-button.outline {
+            background-color: transparent;
+            border: 2px solid white;
+        }
+        
+        .cta-button:hover {
+            background-color: #ff6a00;
+            transform: translateY(-3px);
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
+        }
+        
+        .cta-button.outline:hover {
+            background-color: rgba(255, 255, 255, 0.1);
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        
+        .features {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            margin: 4rem 0;
+            gap: 2rem;
+        }
+        
+        .feature-card {
+            flex: 1 1 300px;
+            background: white;
+            border-radius: 10px;
+            padding: 2rem;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.05);
+            transition: transform 0.3s ease;
+            text-align: center;
+        }
+        
+        .feature-card:hover {
+            transform: translateY(-10px);
+        }
+        
+        .feature-icon {
+            font-size: 2.5rem;
+            color: var(--primary);
+            margin-bottom: 1rem;
+            display: inline-block;
+        }
+        
+        .feature-title {
+            font-size: 1.3rem;
+            margin-bottom: 1rem;
+            color: var(--dark);
+        }
+        
+        .how-it-works {
+            background-color: white;
+            padding: 4rem 2rem;
+            border-radius: 10px;
+            margin: 4rem 0;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.05);
+        }
+        
+        h2 {
+            color: var(--dark);
+            margin-bottom: 2rem;
+            text-align: center;
+            font-size: 2.2rem;
+        }
+        
+        .steps {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            gap: 2rem;
+            margin-top: 3rem;
+        }
+        
+        .step {
+            flex: 1 1 250px;
+            text-align: center;
+            padding: 1.5rem;
+            position: relative;
+        }
+        
+        .step-number {
+            background-color: var(--primary);
+            color: white;
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 1rem;
+            font-weight: bold;
+            font-size: 1.2rem;
+        }
+        
+        .step:not(:last-child):after {
+            content: "";
+            position: absolute;
+            top: 25px;
+            right: -30px;
+            width: 30px;
+            height: 2px;
+            background-color: var(--primary);
+            opacity: 0.3;
+        }
+        
+        .course-showcase {
+            margin: 4rem 0;
+        }
+        
+        .course-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 2rem;
+            margin-top: 2rem;
+        }
+        
+        .course-card {
+            background: white;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.05);
+            transition: transform 0.3s ease;
+            cursor: pointer;
+        }
+        
+        .course-card:hover {
+            transform: translateY(-10px);
+        }
+        
+        .course-image {
+            height: 180px;
+            background-color: #ddd;
+            background-size: cover;
+            background-position: center;
+        }
+        
+        .course-content {
+            padding: 1.5rem;
+        }
+        
+        .course-category {
+            color: var(--primary);
+            font-size: 0.8rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            text-transform: uppercase;
+        }
+        
+        .course-title {
+            font-size: 1.2rem;
+            margin-bottom: 0.5rem;
+        }
+        
+        .course-instructor {
+            font-size: 0.9rem;
+            color: #666;
+            margin-bottom: 1rem;
+        }
+        
+        .course-meta {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 1rem;
+        }
+        
+        .course-price {
+            font-weight: 700;
+            color: var(--dark);
+        }
+        
+        .course-rating {
+            color: var(--accent);
+            font-weight: 600;
+        }
+        
+        .testimonials {
+            margin: 4rem 0;
+        }
+        
+        .testimonial-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 2rem;
+            margin-top: 2rem;
+        }
+        
+        .testimonial {
+            background: white;
+            padding: 2rem;
+            border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.05);
+            position: relative;
+        }
+        
+        .testimonial:before {
+            content: '"';
+            font-size: 5rem;
+            color: var(--light);
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            line-height: 1;
+            z-index: 0;
+            opacity: 0.5;
+        }
+        
+        .testimonial-content {
+            position: relative;
+            z-index: 1;
+        }
+        
+        .testimonial-text {
+            font-style: italic;
+            margin-bottom: 1rem;
+        }
+        
+        .testimonial-author {
+            display: flex;
+            align-items: center;
+        }
+        
+        .author-avatar {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            background-color: #ddd;
+            margin-right: 1rem;
+            background-size: cover;
+            background-position: center;
+        }
+        
+        .author-info h4 {
+            color: var(--dark);
+            margin-bottom: 0.2rem;
+        }
+        
+        .author-info p {
+            color: #666;
+            font-size: 0.8rem;
+        }
+        
+        .pricing {
+            background-color: white;
+            padding: 4rem 2rem;
+            border-radius: 10px;
+            margin: 4rem 0;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.05);
+        }
+        
+        .pricing-plans {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 2rem;
+            margin-top: 3rem;
+        }
+        
+        .pricing-card {
+            background: white;
+            border-radius: 10px;
+            padding: 2rem;
+            flex: 1 1 300px;
+            max-width: 350px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.05);
+            border: 2px solid #eee;
+            transition: all 0.3s ease;
+        }
+        
+        .pricing-card.popular {
+            border-color: var(--primary);
+            position: relative;
+        }
+        
+        .popular-badge {
+            position: absolute;
+            top: -12px;
+            right: 20px;
+            background-color: var(--primary);
+            color: white;
+            padding: 0.3rem 1rem;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 600;
+        }
+        
+        .pricing-card.popular .cta-button {
+            background-color: var(--primary);
+        }
+        
+        .pricing-card.popular .cta-button:hover {
+            background-color: var(--secondary);
+        }
+        
+        .pricing-card:hover {
+            transform: translateY(-10px);
+            box-shadow: 0 15px 30px rgba(0, 0, 0, 0.1);
+        }
+        
+        .pricing-title {
+            font-size: 1.5rem;
+            color: var(--dark);
+            margin-bottom: 1rem;
+            text-align: center;
+        }
+        
+        .pricing-amount {
+            font-size: 2.5rem;
+            color: var(--primary);
+            margin-bottom: 1.5rem;
+            text-align: center;
+        }
+        
+        .pricing-amount span {
+            font-size: 1rem;
+            color: #666;
+        }
+        
+        .pricing-features {
+            list-style: none;
+            margin-bottom: 2rem;
+        }
+        
+        .pricing-features li {
+            margin-bottom: 0.8rem;
+            position: relative;
+            padding-left: 1.8rem;
+        }
+        
+        .pricing-features li:before {
+            content: "✓";
+            color: var(--success);
+            position: absolute;
+            left: 0;
+            font-weight: bold;
+        }
+        
+        .pricing-features li.disabled {
+            color: #999;
+        }
+        
+        .pricing-features li.disabled:before {
+            content: "✗";
+            color: #ccc;
+        }
+        
+        .cta-section {
+            background: linear-gradient(135deg, var(--dark), var(--secondary));
+            color: white;
+            padding: 5rem 0;
+            text-align: center;
+        }
+        
+        .cta-container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 0 2rem;
+        }
+        
+        .cta-section h2 {
+            color: white;
+            margin-bottom: 1.5rem;
+        }
+        
+        .cta-section p {
+            margin-bottom: 2rem;
+            opacity: 0.9;
+            font-size: 1.1rem;
+        }
+        
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.7);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+        
+        .modal-content {
+            background-color: white;
+            padding: 2rem;
+            border-radius: 10px;
+            max-width: 500px;
+            width: 90%;
+            position: relative;
+        }
+        
+        .close-modal {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            font-size: 1.5rem;
+            cursor: pointer;
+            background: none;
+            border: none;
+        }
+        
+        .modal h3 {
+            margin-bottom: 1.5rem;
+            color: var(--dark);
+        }
+        
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+        }
+        
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 0.8rem;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 1rem;
+        }
+        
+        .form-group textarea {
+            min-height: 100px;
+        }
+        
+        footer {
+            background-color: var(--dark);
+            color: white;
+            padding: 4rem 0 2rem;
+        }
+        
+        .footer-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 2rem;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 3rem;
+        }
+        
+        .footer-logo {
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+            display: inline-block;
+        }
+        
+        .footer-logo span {
+            color: var(--accent);
+        }
+        
+        .footer-about p {
+            margin-bottom: 1.5rem;
+            opacity: 0.8;
+        }
+        
+        .social-links {
+            display: flex;
+            gap: 1rem;
+        }
+        
+        .social-links a {
+            color: white;
+            font-size: 1.2rem;
+            transition: color 0.3s ease;
+            text-decoration: none;
+        }
+        
+        .social-links a:hover {
+            color: var(--accent);
+        }
+        
+        .footer-links h3 {
+            font-size: 1.2rem;
+            margin-bottom: 1.5rem;
+            position: relative;
+            padding-bottom: 0.5rem;
+        }
+        
+        .footer-links h3:after {
+            content: "";
+            position: absolute;
+            left: 0;
+            bottom: 0;
+            width: 40px;
+            height: 2px;
+            background-color: var(--accent);
+        }
+        
+        .footer-links ul {
+            list-style: none;
+        }
+        
+        .footer-links ul li {
+            margin-bottom: 0.8rem;
+        }
+        
+        .footer-links ul li a {
+            color: white;
+            opacity: 0.8;
+            text-decoration: none;
+            transition: all 0.3s ease;
+        }
+        
+        .footer-links ul li a:hover {
+            opacity: 1;
+            padding-left: 5px;
+        }
+        
+        .footer-newsletter p {
+            opacity: 0.8;
+            margin-bottom: 1.5rem;
+        }
+        
+        .newsletter-form {
+            display: flex;
+            margin-bottom: 1rem;
+        }
+        
+        .newsletter-form input {
+            flex: 1;
+            padding: 0.8rem;
+            border: none;
+            border-radius: 4px 0 0 4px;
+        }
+        
+        .newsletter-form button {
+            background-color: var(--accent);
+            color: white;
+            border: none;
+            padding: 0 1.2rem;
+            border-radius: 0 4px 4px 0;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+        }
+        
+        .newsletter-form button:hover {
+            background-color: #ff6a00;
+        }
+        
+        .copyright {
+            text-align: center;
+            padding-top: 2rem;
+            margin-top: 2rem;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            opacity: 0.7;
+            font-size: 0.9rem;
+        }
+        
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background-color: var(--success);
+            color: white;
+            padding: 1rem 2rem;
+            border-radius: 5px;
+            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.2);
+            transform: translateY(100px);
+            opacity: 0;
+            transition: all 0.3s ease;
+            z-index: 1000;
+        }
+        
+        .toast.show {
+            transform: translateY(0);
+            opacity: 1;
+        }
+        
+        @media (max-width: 768px) {
+            .header-container {
+                flex-direction: column;
+                text-align: center;
             }
-            contact_submissions.append(submission)
-            logger.info(f"New contact submission from {name} ({email})")
             
-            html = f"""
-            <!DOCTYPE html>
-            <html lang="en">
-            <head>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>Thank You - Tornado Web App</title>
-                <style>
-                    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-                    body {{ 
-                        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                        min-height: 100vh;
-                        padding: 20px;
-                    }}
-                    .container {{
-                        max-width: 800px;
-                        margin: 0 auto;
-                        background: white;
-                        border-radius: 15px;
-                        box-shadow: 0 20px 40px rgba(0,0,0,0.1);
-                        overflow: hidden;
-                    }}
-                    nav {{
-                        background: #2c3e50;
-                        padding: 20px;
-                        display: flex;
-                        justify-content: center;
-                        flex-wrap: wrap;
-                        gap: 15px;
-                    }}
-                    nav a {{
-                        color: white;
-                        text-decoration: none;
-                        padding: 12px 24px;
-                        border-radius: 25px;
-                        transition: all 0.3s ease;
-                        background: rgba(255,255,255,0.1);
-                    }}
-                    nav a:hover {{
-                        background: rgba(255,255,255,0.2);
-                        transform: translateY(-2px);
-                    }}
-                    .content {{
-                        padding: 50px;
-                        text-align: center;
-                    }}
-                    .success-message {{
-                        background: #d4edda;
-                        color: #155724;
-                        padding: 30px;
-                        border-radius: 10px;
-                        margin-bottom: 30px;
-                        border: 1px solid #c3e6cb;
-                    }}
-                    h1 {{
-                        color: #27ae60;
-                        margin-bottom: 20px;
-                    }}
-                    p {{
-                        color: #6c757d;
-                        margin-bottom: 15px;
-                        line-height: 1.6;
-                    }}
-                    .btn {{
-                        display: inline-block;
-                        background: #3498db;
-                        color: white;
-                        padding: 12px 30px;
-                        text-decoration: none;
-                        border-radius: 25px;
-                        font-weight: bold;
-                        transition: all 0.3s ease;
-                        margin: 10px;
-                    }}
-                    .btn:hover {{
-                        background: #2980b9;
-                        transform: translateY(-2px);
-                    }}
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <nav>
-                        <a href="/">🏠 Home</a>
-                        <a href="/contact">📞 Contact</a>
-                        <a href="/chat">💬 Live Chat</a>
-                        <a href="/api/health">🔧 API Health</a>
-                        <a href="/submissions">📊 Submissions</a>
-                    </nav>
-                    
-                    <div class="content">
-                        <div class="success-message">
-                            <h1>✅ Thank You, {name}!</h1>
-                            <p>Your message has been successfully received.</p>
-                            <p>We'll get back to you at <strong>{email}</strong> within 24 hours.</p>
+            nav {
+                width: 100%;
+                margin-top: 1.5rem;
+                display: none;
+            }
+            
+            nav.active {
+                display: block;
+            }
+            
+            nav ul {
+                flex-direction: column;
+                align-items: center;
+            }
+            
+            nav ul li {
+                margin: 0.5rem 0;
+            }
+            
+            .mobile-menu-btn {
+                display: block;
+                position: absolute;
+                top: 25px;
+                right: 20px;
+            }
+            
+            h1 {
+                font-size: 2.2rem;
+            }
+            
+            .hero p {
+                font-size: 1rem;
+            }
+            
+            .step:not(:last-child):after {
+                display: none;
+            }
+            
+            .pricing-plans {
+                flex-direction: column;
+                align-items: center;
+            }
+            
+            .pricing-card {
+                width: 100%;
+                max-width: 400px;
+            }
+        }
+        
+        @media (max-width: 480px) {
+            .cta-button {
+                display: block;
+                margin: 0.5rem auto;
+            }
+            
+            .newsletter-form {
+                flex-direction: column;
+            }
+            
+            .newsletter-form input,
+            .newsletter-form button {
+                border-radius: 4px;
+            }
+            
+            .newsletter-form button {
+                padding: 0.8rem;
+                margin-top: 0.5rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="header-container">
+            <a href="#" class="logo">Learn<span>Hub</span></a>
+            <button class="mobile-menu-btn">☰</button>
+            <nav id="main-nav">
+                <ul>
+                    <li><a href="#features">Features</a></li>
+                    <li><a href="#how-it-works">How It Works</a></li>
+                    <li><a href="#courses">Courses</a></li>
+                    <li><a href="#pricing">Pricing</a></li>
+                    <li><a href="#testimonials">Testimonials</a></li>
+                </ul>
+            </nav>
+        </div>
+        
+        <div class="hero">
+            <div class="hero-content">
+                <h1>Create & Sell Your Online Courses</h1>
+                <p>Join thousands of instructors earning money by sharing their knowledge. Our platform makes it easy to create, market, and sell your courses to students worldwide.</p>
+                <div>
+                    <button class="cta-button" id="signup-btn">Start Teaching Today</button>
+                    <a href="#courses" class="cta-button outline">Explore Courses</a>
+                </div>
+            </div>
+        </div>
+    </header>
+    
+    <div class="container">
+        <section id="features" class="features">
+            <div class="feature-card">
+                <div class="feature-icon">🎓</div>
+                <h3 class="feature-title">Easy Course Creation</h3>
+                <p>Our intuitive course builder helps you create professional courses with videos, quizzes, and downloads in minutes.</p>
+            </div>
+            
+            <div class="feature-card">
+                <div class="feature-icon">💸</div>
+                <h3 class="feature-title">Earn Money</h3>
+                <p>Keep up to 80% of each sale with our competitive revenue sharing model. Get paid monthly via PayPal or bank transfer.</p>
+            </div>
+            
+            <div class="feature-card">
+                <div class="feature-icon">📈</div>
+                <h3 class="feature-title">Marketing Tools</h3>
+                <p>Built-in marketing features help you promote your courses with coupons, affiliates, and email campaigns.</p>
+            </div>
+        </section>
+        
+        <section id="how-it-works" class="how-it-works">
+            <h2>How LearnHub Works</h2>
+            <p style="text-align: center; max-width: 700px; margin: 0 auto;">Whether you're an expert, educator, or entrepreneur, you can launch your online course in just a few simple steps.</p>
+            
+            <div class="steps">
+                <div class="step">
+                    <div class="step-number">1</div>
+                    <h3>Sign Up</h3>
+                    <p>Create your free instructor account in minutes. No upfront costs or commitments.</p>
+                </div>
+                
+                <div class="step">
+                    <div class="step-number">2</div>
+                    <h3>Create Your Course</h3>
+                    <p>Use our tools to build engaging content with videos, presentations, quizzes and more.</p>
+                </div>
+                
+                <div class="step">
+                    <div class="step-number">3</div>
+                    <h3>Publish</h3>
+                    <p>Submit your course for review. We'll help optimize it for maximum student engagement.</p>
+                </div>
+                
+                <div class="step">
+                    <div class="step-number">4</div>
+                    <h3>Earn</h3>
+                    <p>Start earning as students enroll in your course. We handle payments and hosting.</p>
+                </div>
+            </div>
+        </section>
+        
+        <section id="courses" class="course-showcase">
+            <h2>Popular Course Categories</h2>
+            <p style="text-align: center; margin-bottom: 2rem;">Browse some of our top-performing courses to get inspiration for your own.</p>
+            
+            <div class="course-grid">
+                <div class="course-card" onclick="showCourseModal('The Complete JavaScript Course 2024')">
+                    <div class="course-image" style="background-image: url('https://images.unsplash.com/photo-1498050108023-c5249f4df085?ixlib=rb-1.2.1&auto=format&fit=crop&w=500&q=60');"></div>
+                    <div class="course-content">
+                        <div class="course-category">Web Development</div>
+                        <h3 class="course-title">The Complete JavaScript Course 2024</h3>
+                        <div class="course-instructor">By John Smith</div>
+                        <div class="course-meta">
+                            <div class="course-price">$89.99</div>
+                            <div class="course-rating">★ 4.8 (1,245)</div>
                         </div>
-                        <a href="/contact" class="btn">Send Another Message</a>
-                        <a href="/" class="btn">Return to Home</a>
                     </div>
                 </div>
-            </body>
-            </html>
-            """
-            self.write(html)
-        except Exception as e:
-            logger.error(f"Error processing contact form: {e}")
-            self.set_status(500)
-            self.write("An error occurred while processing your submission")
-
-class SubmissionsHandler(tornado.web.RequestHandler):
-    def get(self):
-        html = """
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Submissions - Tornado Web App</title>
-            <style>
-                * { margin: 0; padding: 0; box-sizing: border-box; }
-                body { 
-                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                    min-height: 100vh;
-                    padding: 20px;
-                }
-                .container {
-                    max-width: 1200px;
-                    margin: 0 auto;
-                    background: white;
-                    border-radius: 15px;
-                    box-shadow: 0 20px 40px rgba(0,0,0,0.1);
-                    overflow: hidden;
-                }
-                nav {
-                    background: #2c3e50;
-                    padding: 20px;
-                    display: flex;
-                    justify-content: center;
-                    flex-wrap: wrap;
-                    gap: 15px;
-                }
-                nav a {
-                    color: white;
-                    text-decoration: none;
-                    padding: 12px 24px;
-                    border-radius: 25px;
-                    transition: all 0.3s ease;
-                    background: rgba(255,255,255,0.1);
-                }
-                nav a:hover {
-                    background: rgba(255,255,255,0.2);
-                    transform: translateY(-2px);
-                }
-                .content {
-                    padding: 40px;
-                }
-                h1 {
-                    color: #2c3e50;
-                    text-align: center;
-                    margin-bottom: 30px;
-                    font-size: 2.5em;
-                }
-                .submissions-list {
-                    display: grid;
-                    gap: 20px;
-                }
-                .submission-card {
-                    background: #f8f9fa;
-                    padding: 25px;
-                    border-radius: 10px;
-                    border-left: 5px solid #3498db;
-                }
-                .submission-header {
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    margin-bottom: 15px;
-                    flex-wrap: wrap;
-                    gap: 10px;
-                }
-                .submission-name {
-                    font-weight: bold;
-                    color: #2c3e50;
-                    font-size: 1.2em;
-                }
-                .submission-email {
-                    color: #3498db;
-                }
-                .submission-time {
-                    color: #6c757d;
-                    font-size: 0.9em;
-                }
-                .submission-message {
-                    color: #495057;
-                    line-height: 1.6;
-                    background: white;
-                    padding: 15px;
-                    border-radius: 5px;
-                    border: 1px solid #e9ecef;
-                }
-                .empty-state {
-                    text-align: center;
-                    padding: 60px 20px;
-                    color: #6c757d;
-                }
-                .empty-state h2 {
-                    margin-bottom: 15px;
-                    font-weight: 300;
-                }
-                .btn {
-                    display: inline-block;
-                    background: #3498db;
-                    color: white;
-                    padding: 12px 24px;
-                    text-decoration: none;
-                    border-radius: 25px;
-                    font-weight: bold;
-                    transition: all 0.3s ease;
-                    border: none;
-                    cursor: pointer;
-                    margin-top: 20px;
-                }
-                .btn:hover {
-                    background: #2980b9;
-                    transform: translateY(-2px);
-                }
-                @media (max-width: 768px) {
-                    .content { padding: 20px; }
-                    nav { flex-direction: column; align-items: center; }
-                    nav a { width: 200px; text-align: center; }
-                    .submission-header { flex-direction: column; align-items: flex-start; }
-                }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <nav>
-                    <a href="/">🏠 Home</a>
-                    <a href="/contact">📞 Contact</a>
-                    <a href="/chat">💬 Live Chat</a>
-                    <a href="/api/health">🔧 API Health</a>
-                    <a href="/submissions">📊 Submissions</a>
-                </nav>
                 
-                <div class="content">
-                    <h1>📊 Contact Submissions</h1>
-                    <div class="submissions-list" id="submissionsList">
-                        <!-- Submissions will be loaded here -->
+                <div class="course-card" onclick="showCourseModal('Python for Data Analysis')">
+                    <div class="course-image" style="background-image: url('https://images.unsplash.com/photo-1551288049-bebda4e38f71?ixlib=rb-1.2.1&auto=format&fit=crop&w=500&q=60');"></div>
+                    <div class="course-content">
+                        <div class="course-category">Data Science</div>
+                        <h3 class="course-title">Python for Data Analysis</h3>
+                        <div class="course-instructor">By Sarah Johnson</div>
+                        <div class="course-meta">
+                            <div class="course-price">$79.99</div>
+                            <div class="course-rating">★ 4.7 (892)</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="course-card" onclick="showCourseModal('Digital Photography Masterclass')">
+                    <div class="course-image" style="background-image: url('https://images.unsplash.com/photo-1579389083078-4e7018379f7e?ixlib=rb-1.2.1&auto=format&fit=crop&w=500&q=60');"></div>
+                    <div class="course-content">
+                        <div class="course-category">Photography</div>
+                        <h3 class="course-title">Digital Photography Masterclass</h3>
+                        <div class="course-instructor">By Michael Brown</div>
+                        <div class="course-meta">
+                            <div class="course-price">$69.99</div>
+                            <div class="course-rating">★ 4.9 (2,103)</div>
+                        </div>
                     </div>
                 </div>
             </div>
-
-            <script>
-                function escapeHtml(unsafe) {
-                    return unsafe
-                        .replace(/&/g, "&amp;")
-                        .replace(/</g, "&lt;")
-                        .replace(/>/g, "&gt;")
-                        .replace(/"/g, "&quot;")
-                        .replace(/'/g, "&#039;");
-                }
-                
-                async function loadSubmissions() {
-                    try {
-                        const response = await fetch('/api/submissions');
-                        const submissions = await response.json();
-                        
-                        const container = document.getElementById('submissionsList');
-                        
-                        if (submissions.length === 0) {
-                            container.innerHTML = `
-                                <div class="empty-state">
-                                    <h2>No submissions yet</h2>
-                                    <p>Be the first to send us a message!</p>
-                                    <a href="/contact" class="btn">Send a Message</a>
-                                </div>
-                            `;
-                            return;
-                        }
-                        
-                        container.innerHTML = submissions.map(sub => `
-                            <div class="submission-card">
-                                <div class="submission-header">
-                                    <span class="submission-name">${escapeHtml(sub.name)}</span>
-                                    <span class="submission-email">${escapeHtml(sub.email)}</span>
-                                    <span class="submission-time">${new Date(sub.timestamp).toLocaleString()}</span>
-                                </div>
-                                <div class="submission-message">${escapeHtml(sub.message)}</div>
+        </section>
+        
+        <section id="testimonials" class="testimonials">
+            <h2>What Our Instructors Say</h2>
+            <p style="text-align: center; margin-bottom: 2rem;">Hear from instructors who've built successful businesses on LearnHub.</p>
+            
+            <div class="testimonial-grid">
+                <div class="testimonial">
+                    <div class="testimonial-content">
+                        <p class="testimonial-text">LearnHub has allowed me to turn my expertise into a full-time income. In my first year, I earned over $75,000 from my photography courses.</p>
+                        <div class="testimonial-author">
+                            <div class="author-avatar" style="background-image: url('https://randomuser.me/api/portraits/women/32.jpg');"></div>
+                            <div class="author-info">
+                                <h4>Jessica Wilson</h4>
+                                <p>Photography Instructor</p>
                             </div>
-                        `).join('');
-                    } catch (error) {
-                        console.error('Error loading submissions:', error);
-                        document.getElementById('submissionsList').innerHTML = '<p>Error loading submissions</p>';
-                    }
-                }
-                
-                loadSubmissions();
-            </script>
-        </body>
-        </html>
-        """
-        self.write(html)
-
-class ChatHandler(tornado.web.RequestHandler):
-    def get(self):
-        html = """
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Live Chat - Tornado Web App</title>
-            <style>
-                * { margin: 0; padding: 0; box-sizing: border-box; }
-                body { 
-                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                    min-height: 100vh;
-                    padding: 20px;
-                }
-                .container {
-                    max-width: 1000px;
-                    margin: 0 auto;
-                    background: white;
-                    border-radius: 15px;
-                    box-shadow: 0 20px 40px rgba(0,0,0,0.1);
-                    overflow: hidden;
-                    height: 80vh;
-                    display: flex;
-                    flex-direction: column;
-                }
-                nav {
-                    background: #2c3e50;
-                    padding: 20px;
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    flex-wrap: wrap;
-                    gap: 15px;
-                }
-                .nav-links {
-                    display: flex;
-                    gap: 15px;
-                    flex-wrap: wrap;
-                }
-                nav a {
-                    color: white;
-                    text-decoration: none;
-                    padding: 10px 20px;
-                    border-radius: 20px;
-                    transition: all 0.3s ease;
-                    background: rgba(255,255,255,0.1);
-                }
-                nav a:hover {
-                    background: rgba(255,255,255,0.2);
-                    transform: translateY(-2px);
-                }
-                .chat-info {
-                    color: white;
-                    display: flex;
-                    align-items: center;
-                    gap: 15px;
-                }
-                .user-count {
-                    background: rgba(255,255,255,0.2);
-                    padding: 5px 15px;
-                    border-radius: 15px;
-                    font-size: 0.9em;
-                }
-                .chat-container {
-                    flex: 1;
-                    display: flex;
-                    flex-direction: column;
-                    padding: 0;
-                }
-                .chat-messages {
-                    flex: 1;
-                    overflow-y: auto;
-                    padding: 20px;
-                    background: #f8f9fa;
-                }
-                .message {
-                    margin-bottom: 15px;
-                    display: flex;
-                    flex-direction: column;
-                }
-                .message.own {
-                    align-items: flex-end;
-                }
-                .message.other {
-                    align-items: flex-start;
-                }
-                .message-bubble {
-                    max-width: 70%;
-                    padding: 12px 18px;
-                    border-radius: 18px;
-                    position: relative;
-                    word-wrap: break-word;
-                }
-                .message.own .message-bubble {
-                    background: #3498db;
-                    color: white;
-                    border-bottom-right-radius: 5px;
-                }
-                .message.other .message-bubble {
-                    background: white;
-                    color: #333;
-                    border: 1px solid #e9ecef;
-                    border-bottom-left-radius: 5px;
-                }
-                .message-sender {
-                    font-size: 0.8em;
-                    color: #6c757d;
-                    margin-bottom: 5px;
-                    padding: 0 10px;
-                }
-                .message-time {
-                    font-size: 0.7em;
-                    opacity: 0.7;
-                    margin-top: 5px;
-                    text-align: right;
-                }
-                .system-message {
-                    text-align: center;
-                    color: #6c757d;
-                    font-style: italic;
-                    margin: 10px 0;
-                    font-size: 0.9em;
-                }
-                .chat-input-container {
-                    padding: 20px;
-                    background: white;
-                    border-top: 1px solid #e9ecef;
-                    display: flex;
-                    gap: 10px;
-                }
-                #messageInput {
-                    flex: 1;
-                    padding: 15px;
-                    border: 2px solid #e9ecef;
-                    border-radius: 25px;
-                    font-size: 16px;
-                    outline: none;
-                    transition: border-color 0.3s ease;
-                }
-                #messageInput:focus {
-                    border-color: #3498db;
-                }
-                #sendButton {
-                    background: #3498db;
-                    color: white;
-                    border: none;
-                    padding: 15px 25px;
-                    border-radius: 25px;
-                    cursor: pointer;
-                    font-size: 16px;
-                    transition: all 0.3s ease;
-                }
-                #sendButton:hover:not(:disabled) {
-                    background: #2980b9;
-                    transform: translateY(-2px);
-                }
-                #sendButton:disabled {
-                    background: #bdc3c7;
-                    cursor: not-allowed;
-                }
-                .connection-status {
-                    padding: 10px 20px;
-                    text-align: center;
-                    font-size: 0.9em;
-                    background: #fff3cd;
-                    color: #856404;
-                    border-bottom: 1px solid #ffeaa7;
-                }
-                .connection-status.connected {
-                    background: #d1ecf1;
-                    color: #0c5460;
-                }
-                @media (max-width: 768px) {
-                    .container { height: 90vh; margin: 10px; }
-                    nav { flex-direction: column; }
-                    .nav-links { justify-content: center; }
-                    .message-bubble { max-width: 85%; }
-                }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <nav>
-                    <div class="nav-links">
-                        <a href="/">🏠 Home</a>
-                        <a href="/contact">📞 Contact</a>
-                        <a href="/chat">💬 Live Chat</a>
-                        <a href="/api/health">🔧 API Health</a>
-                        <a href="/submissions">📊 Submissions</a>
+                        </div>
                     </div>
-                    <div class="chat-info">
-                        <span class="user-count">👥 <span id="userCount">0</span> users online</span>
-                    </div>
-                </nav>
-                
-                <div class="connection-status" id="connectionStatus">
-                    🔄 Connecting to chat...
                 </div>
                 
-                <div class="chat-container">
-                    <div class="chat-messages" id="chatMessages"></div>
-                    
-                    <div class="chat-input-container">
-                        <input type="text" id="messageInput" placeholder="Type your message here..." maxlength="500" disabled>
-                        <button id="sendButton" disabled>Send</button>
+                <div class="testimonial">
+                    <div class="testimonial-content">
+                        <p class="testimonial-text">The platform is incredibly easy to use. I was able to create and launch my first course in just two weeks, and now it's my primary source of income.</p>
+                        <div class="testimonial-author">
+                            <div class="author-avatar" style="background-image: url('https://randomuser.me/api/portraits/men/45.jpg');"></div>
+                            <div class="author-info">
+                                <h4>David Chen</h4>
+                                <p>Programming Instructor</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="testimonial">
+                    <div class="testimonial-content">
+                        <p class="testimonial-text">What I love most is the community. The support team and other instructors are always willing to help and share strategies for success.</p>
+                        <div class="testimonial-author">
+                            <div class="author-avatar" style="background-image: url('https://randomuser.me/api/portraits/women/68.jpg');"></div>
+                            <div class="author-info">
+                                <h4>Maria Garcia</h4>
+                                <p>Business Instructor</p>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
-
-            <script>
-                let ws = null;
-                let username = "User_" + Math.floor(Math.random() * 10000);
-                let isConnected = false;
-                
-                function connect() {
-                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-                    const wsUrl = protocol + '//' + window.location.host + '/websocket';
-                    
-                    ws = new WebSocket(wsUrl);
-                    
-                    ws.onopen = function() {
-                        console.log('WebSocket connected');
-                        isConnected = true;
-                        updateConnectionStatus(true);
-                        document.getElementById('messageInput').disabled = false;
-                        document.getElementById('sendButton').disabled = false;
-                        addSystemMessage('Connected to chat room');
-                    };
-                    
-                    ws.onmessage = function(event) {
-                        const data = JSON.parse(event.data);
-                        console.log('Received:', data);
-                        
-                        if (data.type === 'message') {
-                            addMessage(data.sender, data.message, data.timestamp, data.sender === username);
-                        } else if (data.type === 'user_count') {
-                            document.getElementById('userCount').textContent = data.count;
-                        } else if (data.type === 'system') {
-                            addSystemMessage(data.message);
-                        } else if (data.type === 'chat_history') {
-                            data.messages.forEach(msg => {
-                                addMessage(msg.sender, msg.message, msg.timestamp, msg.sender === username, true);
-                            });
-                        }
-                    };
-                    
-                    ws.onclose = function() {
-                        console.log('WebSocket disconnected');
-                        isConnected = false;
-                        updateConnectionStatus(false);
-                        document.getElementById('messageInput').disabled = true;
-                        document.getElementById('sendButton').disabled = true;
-                        addSystemMessage('Disconnected from chat room');
-                        
-                        // Attempt to reconnect after 3 seconds
-                        setTimeout(connect, 3000);
-                    };
-                    
-                    ws.onerror = function(error) {
-                        console.error('WebSocket error:', error);
-                        updateConnectionStatus(false);
-                    };
-                }
-                
-                function updateConnectionStatus(connected) {
-                    const statusEl = document.getElementById('connectionStatus');
-                    if (connected) {
-                        statusEl.textContent = '✅ Connected to chat';
-                        statusEl.className = 'connection-status connected';
-                    } else {
-                        statusEl.textContent = '🔴 Disconnected - Attempting to reconnect...';
-                        statusEl.className = 'connection-status';
-                    }
-                }
-                
-                function sendMessage() {
-                    const messageInput = document.getElementById('messageInput');
-                    const message = messageInput.value.trim();
-                    
-                    if (message && ws && ws.readyState === WebSocket.OPEN) {
-                        const messageData = {
-                            type: 'message',
-                            sender: username,
-                            message: message,
-                            timestamp: new Date().toISOString()
-                        };
-                        
-                        ws.send(JSON.stringify(messageData));
-                        messageInput.value = '';
-                    }
-                }
-                
-                function addMessage(sender, message, timestamp, isOwn, isHistory = false) {
-                    const messagesDiv = document.getElementById('chatMessages');
-                    const messageDiv = document.createElement('div');
-                    messageDiv.className = `message ${isOwn ? 'own' : 'other'}`;
-                    
-                    const senderEl = document.createElement('div');
-                    senderEl.className = 'message-sender';
-                    senderEl.textContent = isOwn ? 'You' : sender;
-                    
-                    const bubbleEl = document.createElement('div');
-                    bubbleEl.className = 'message-bubble';
-                    bubbleEl.textContent = message;
-                    
-                    const timeEl = document.createElement('div');
-                    timeEl.className = 'message-time';
-                    timeEl.textContent = new Date(timestamp).toLocaleTimeString();
-                    
-                    messageDiv.appendChild(senderEl);
-                    messageDiv.appendChild(bubbleEl);
-                    messageDiv.appendChild(timeEl);
-                    messagesDiv.appendChild(messageDiv);
-                    
-                    if (!isHistory) {
-                        messagesDiv.scrollTop = messagesDiv.scrollHeight;
-                    }
-                }
-                
-                function addSystemMessage(message) {
-                    const messagesDiv = document.getElementById('chatMessages');
-                    const messageDiv = document.createElement('div');
-                    messageDiv.className = 'system-message';
-                    messageDiv.textContent = message;
-                    messagesDiv.appendChild(messageDiv);
-                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
-                }
-                
-                // Event listeners
-                document.getElementById('sendButton').addEventListener('click', sendMessage);
-                document.getElementById('messageInput').addEventListener('keypress', function(e) {
-                    if (e.key === 'Enter') {
-                        sendMessage();
-                    }
-                });
-                
-                // Initialize connection when page loads
-                window.addEventListener('load', connect);
-            </script>
-        </body>
-        </html>
-        """
-        self.write(html)
-
-class HealthHandler(tornado.web.RequestHandler):
-    def get(self):
-        health_data = {
-            "status": "healthy",
-            "timestamp": datetime.now().isoformat(),
-            "service": "Tornado Web Application",
-            "version": "1.0.0",
-            "contact_submissions_count": len(contact_submissions),
-            "websocket_clients_count": len(websocket_clients),
-            "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "uptime": "running"
-        }
-        self.set_header("Content-Type", "application/json")
-        self.write(json.dumps(health_data, indent=2))
-
-class SubmissionsAPIHandler(tornado.web.RequestHandler):
-    def get(self):
-        self.set_header("Content-Type", "application/json")
-        self.write(json.dumps(contact_submissions, indent=2))
-
-class ChatWebSocket(tornado.websocket.WebSocketHandler):
-    # Store chat history
-    chat_history = []
-    
-    def open(self):
-        websocket_clients.add(self)
-        logger.info(f"WebSocket connection opened. Total clients: {len(websocket_clients)}")
-        self.broadcast_user_count()
-        self.send_system_message(f"User joined the chat")
+        </section>
         
-        # Send chat history to the new client
-        if self.chat_history:
-            self.write_message(json.dumps({
-                'type': 'chat_history',
-                'messages': self.chat_history[-50:]  # Last 50 messages
-            }))
-    
-    def on_message(self, message):
-        try:
-            data = json.loads(message)
-            if data.get('type') == 'message':
-                message_data = {
-                    'type': 'message',
-                    'sender': data.get('sender', 'Anonymous'),
-                    'message': data.get('message', ''),
-                    'timestamp': data.get('timestamp', datetime.now().isoformat())
-                }
+        <section id="pricing" class="pricing">
+            <h2>Simple, Transparent Pricing</h2>
+            <p style="text-align: center; margin-bottom: 2rem;">Choose the plan that works best for you. No hidden fees, cancel anytime.</p>
+            
+            <div class="pricing-plans">
+                <div class="pricing-card">
+                    <h3 class="pricing-title">Starter</h3>
+                    <div class="pricing-amount">$0<span>/month</span></div>
+                    <ul class="pricing-features">
+                        <li>5% transaction fee</li>
+                        <li>Basic course analytics</li>
+                        <li>Email support</li>
+                        <li class="disabled">Marketing tools</li>
+                        <li class="disabled">Affiliate program</li>
+                        <li class="disabled">Custom domain</li>
+                    </ul>
+                    <button class="cta-button outline" onclick="selectPlan('Starter')">Get Started</button>
+                </div>
                 
-                # Store in history
-                self.chat_history.append(message_data)
-                # Keep only last 100 messages
-                if len(self.chat_history) > 100:
-                    self.chat_history = self.chat_history[-100:]
+                <div class="pricing-card popular">
+                    <div class="popular-badge">Most Popular</div>
+                    <h3 class="pricing-title">Professional</h3>
+                    <div class="pricing-amount">$29<span>/month</span></div>
+                    <ul class="pricing-features">
+                        <li>3% transaction fee</li>
+                        <li>Advanced analytics</li>
+                        <li>Priority support</li>
+                        <li>Basic marketing tools</li>
+                        <li>Affiliate program</li>
+                        <li class="disabled">Custom domain</li>
+                    </ul>
+                    <button class="cta-button" onclick="selectPlan('Professional')">Choose Plan</button>
+                </div>
                 
-                # Broadcast to all clients
-                self.broadcast(message_data)
-                logger.info(f"Chat message from {message_data['sender']}: {message_data['message'][:50]}...")
-                
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON received: {message}")
-        except Exception as e:
-            logger.error(f"Error processing message: {e}")
+                <div class="pricing-card">
+                    <h3 class="pricing-title">Business</h3>
+                    <div class="pricing-amount">$99<span>/month</span></div>
+                    <ul class="pricing-features">
+                        <li>1% transaction fee</li>
+                        <li>Premium analytics</li>
+                        <li>24/7 support</li>
+                        <li>Advanced marketing</li>
+                        <li>Affiliate program</li>
+                        <li>Custom domain</li>
+                    </ul>
+                    <button class="cta-button outline" onclick="selectPlan('Business')">Choose Plan</button>
+                </div>
+            </div>
+        </section>
+    </div>
     
-    def on_close(self):
-        websocket_clients.discard(self)
-        logger.info(f"WebSocket connection closed. Total clients: {len(websocket_clients)}")
-        self.broadcast_user_count()
-        self.send_system_message("User left the chat")
+    <section class="cta-section">
+        <div class="cta-container">
+            <h2>Ready to Share Your Knowledge?</h2>
+            <p>Join thousands of instructors earning money doing what they love. Create your first course today and start earning tomorrow.</p>
+            <button class="cta-button" id="final-cta">Become an Instructor</button>
+        </div>
+    </section>
     
-    def broadcast(self, message):
-        disconnected_clients = set()
-        for client in websocket_clients:
-            try:
-                client.write_message(json.dumps(message))
-            except:
-                disconnected_clients.add(client)
+    <div class="modal" id="signup-modal">
+        <div class="modal-content">
+            <button class="close-modal" onclick="closeModal('signup-modal')">×</button>
+            <h3>Become an Instructor</h3>
+            <form id="signup-form" onsubmit="submitSignupForm(event)">
+                <div class="form-group">
+                    <label for="name">Full Name</label>
+                    <input type="text" id="name" required>
+                </div>
+                <div class="form-group">
+                    <label for="email">Email Address</label>
+                    <input type="email" id="email" required>
+                </div>
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <input type="password" id="password" required minlength="8">
+                </div>
+                <div class="form-group">
+                    <label for="expertise">Your Expertise</label>
+                    <select id="expertise" required>
+                        <option value="">Select your expertise</option>
+                        <option value="development">Web Development</option>
+                        <option value="design">Design</option>
+                        <option value="business">Business</option>
+                        <option value="photography">Photography</option>
+                        <option value="music">Music</option>
+                        <option value="other">Other</option>
+                    </select>
+                </div>
+                <button type="submit" class="cta-button" style="width: 100%;">Create Account</button>
+            </form>
+        </div>
+    </div>
+    
+    <div class="modal" id="course-modal">
+        <div class="modal-content">
+            <button class="close-modal" onclick="closeModal('course-modal')">×</button>
+            <h3 id="course-modal-title">Course Details</h3>
+            <div id="course-modal-content">
+                <!-- Content will be inserted by JavaScript -->
+            </div>
+            <button class="cta-button" style="width: 100%; margin-top: 1.5rem;" onclick="enrollInCourse()">Enroll Now</button>
+        </div>
+    </div>
+    
+    <div class="modal" id="plan-modal">
+        <div class="modal-content">
+            <button class="close-modal" onclick="closeModal('plan-modal')">×</button>
+            <h3 id="plan-modal-title">Select Payment Method</h3>
+            <form id="payment-form" onsubmit="submitPaymentForm(event)">
+                <input type="hidden" id="selected-plan">
+                <div class="form-group">
+                    <label>Payment Method</label>
+                    <div style="display: flex; gap: 1rem; margin-top: 0.5rem;">
+                        <label style="display: flex; align-items: center;">
+                            <input type="radio" name="payment" value="credit" checked style="margin-right: 0.5rem;">
+                            Credit Card
+                        </label>
+                        <label style="display: flex; align-items: center;">
+                            <input type="radio" name="payment" value="paypal" style="margin-right: 0.5rem;">
+                            PayPal
+                        </label>
+                    </div>
+                </div>
+                <div id="credit-card-fields">
+                    <div class="form-group">
+                        <label for="card-number">Card Number</label>
+                        <input type="text" id="card-number" placeholder="1234 5678 9012 3456">
+                    </div>
+                    <div style="display: flex; gap: 1rem;">
+                        <div class="form-group" style="flex: 1;">
+                            <label for="expiry">Expiry Date</label>
+                            <input type="text" id="expiry" placeholder="MM/YY">
+                        </div>
+                        <div class="form-group" style="flex: 1;">
+                            <label for="cvc">CVC</label>
+                            <input type="text" id="cvc" placeholder="123">
+                        </div>
+                    </div>
+                </div>
+                <button type="submit" class="cta-button" style="width: 100%;">Complete Subscription</button>
+            </form>
+        </div>
+    </div>
+    
+    <div class="toast" id="toast-message"></div>
+    
+    <footer>
+        <div class="footer-container">
+            <div class="footer-about">
+                <a href="#" class="footer-logo">Learn<span>Hub</span></a>
+                <p>The leading platform for online course creation and sales. Empowering instructors to share knowledge and earn income.</p>
+                <div class="social-links">
+                    <a href="#" aria-label="Facebook">📘</a>
+                    <a href="#" aria-label="Twitter">🐦</a>
+                    <a href="#" aria-label="Instagram">📷</a>
+                    <a href="#" aria-label="YouTube">🔴</a>
+                </div>
+            </div>
+            
+            <div class="footer-links">
+                <h3>For Instructors</h3>
+                <ul>
+                    <li><a href="#">How It Works</a></li>
+                    <li><a href="#">Pricing</a></li>
+                    <li><a href="#">Course Creation</a></li>
+                    <li><a href="#">Marketing Tips</a></li>
+                    <li><a href="#">Success Stories</a></li>
+                </ul>
+            </div>
+            
+            <div class="footer-links">
+                <h3>For Students</h3>
+                <ul>
+                    <li><a href="#">Browse Courses</a></li>
+                    <li><a href="#">Free Courses</a></li>
+                    <li><a href="#">Gift Courses</a></li>
+                    <li><a href="#">Learning Paths</a></li>
+                    <li><a href="#">Student Discount</a></li>
+                </ul>
+            </div>
+            
+            <div class="footer-newsletter">
+                <h3>Newsletter</h3>
+                <p>Subscribe to get tips and updates on course creation and online teaching.</p>
+                <form class="newsletter-form" onsubmit="subscribeNewsletter(event)">
+                    <input type="email" id="newsletter-email" placeholder="Your email address" required>
+                    <button type="submit">→</button>
+                </form>
+                <p>We respect your privacy. Unsubscribe at any time.</p>
+            </div>
+        </div>
         
-        # Clean up disconnected clients
-        for client in disconnected_clients:
-            websocket_clients.discard(client)
-    
-    def broadcast_user_count(self):
-        user_count_message = {
-            'type': 'user_count',
-            'count': len(websocket_clients)
-        }
-        self.broadcast(user_count_message)
-    
-    def send_system_message(self, message):
-        system_message = {
-            'type': 'system',
-            'message': message
-        }
-        self.broadcast(system_message)
-    
-    def check_origin(self, origin):
-        return True
+        <div class="copyright">
+            &copy; 2024 LearnHub. All rights reserved. | <a href="#" style="color: white; opacity: 0.8;">Terms</a> | <a href="#" style="color: white; opacity: 0.8;">Privacy</a>
+        </div>
+    </footer>
 
-def make_app():
-    return tornado.web.Application([
-        (r"/", MainHandler),
-        (r"/contact", ContactHandler),
-        (r"/chat", ChatHandler),
-        (r"/submissions", SubmissionsHandler),
-        (r"/api/health", HealthHandler),
-        (r"/api/submissions", SubmissionsAPIHandler),
-        (r"/websocket", ChatWebSocket),
-    ], autoreload=True)
+    <script>
+        // Mobile menu toggle
+        const mobileMenuBtn = document.querySelector('.mobile-menu-btn');
+        const mainNav = document.getElementById('main-nav');
+        
+        mobileMenuBtn.addEventListener('click', () => {
+            mainNav.classList.toggle('active');
+        });
+        
+        // Smooth scrolling for anchor links
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function(e) {
+                e.preventDefault();
+                
+                const targetId = this.getAttribute('href');
+                if (targetId === '#') return;
+                
+                const targetElement = document.querySelector(targetId);
+                if (targetElement) {
+                    targetElement.scrollIntoView({
+                        behavior: 'smooth'
+                    });
+                    
+                    // Close mobile menu if open
+                    mainNav.classList.remove('active');
+                }
+            });
+        });
+        
+        // Modal functions
+        function openModal(modalId) {
+            document.getElementById(modalId).style.display = 'flex';
+            document.body.style.overflow = 'hidden';
+        }
+        
+        function closeModal(modalId) {
+            document.getElementById(modalId).style.display = 'none';
+            document.body.style.overflow = 'auto';
+        }
+        
+        // Close modal when clicking outside content
+        window.addEventListener('click', (e) => {
+            if (e.target.classList.contains('modal')) {
+                e.target.style.display = 'none';
+                document.body.style.overflow = 'auto';
+            }
+        });
+        
+        // Signup button handlers
+        const signupBtn = document.getElementById('signup-btn');
+        const finalCta = document.getElementById('final-cta');
+        
+        signupBtn.addEventListener('click', () => openModal('signup-modal'));
+        finalCta.addEventListener('click', () => openModal('signup-modal'));
+        
+        // Course modal
+        function showCourseModal(courseTitle) {
+            const courseModal = document.getElementById('course-modal');
+            const courseModalTitle = document.getElementById('course-modal-title');
+            const courseModalContent = document.getElementById('course-modal-content');
+            
+            courseModalTitle.textContent = courseTitle;
+            
+            // Generate dynamic content based on course
+            let content = '';
+            if (courseTitle === 'The Complete JavaScript Course 2024') {
+                content = `
+                    <p><strong>Category:</strong> Web Development</p>
+                    <p><strong>Instructor:</strong> John Smith</p>
+                    <p><strong>Price:</strong> $89.99</p>
+                    <p><strong>Rating:</strong> ★ 4.8 (1,245 students)</p>
+                    <p style="margin-top: 1rem;">Master JavaScript with this complete course from beginner to advanced levels. Learn modern JavaScript (ES6+) through real-world projects and challenges.</p>
+                    <h4 style="margin: 1.5rem 0 0.5rem;">What you'll learn:</h4>
+                    <ul style="padding-left: 1.5rem;">
+                        <li>JavaScript fundamentals</li>
+                        <li>DOM manipulation</li>
+                        <li>Async programming</li>
+                        <li>Modern ES6+ features</li>
+                        <li>Real-world projects</li>
+                    </ul>
+                `;
+            } else if (courseTitle === 'Python for Data Analysis') {
+                content = `
+                    <p><strong>Category:</strong> Data Science</p>
+                    <p><strong>Instructor:</strong> Sarah Johnson</p>
+                    <p><strong>Price:</strong> $79.99</p>
+                    <p><strong>Rating:</strong> ★ 4.7 (892 students)</p>
+                    <p style="margin-top: 1rem;">Learn how to use Python for data analysis and visualization with Pandas, NumPy, Matplotlib, and Seaborn.</p>
+                    <h4 style="margin: 1.5rem 0 0.5rem;">What you'll learn:</h4>
+                    <ul style="padding-left: 1.5rem;">
+                        <li>Data cleaning techniques</li>
+                        <li>Exploratory data analysis</li>
+                        <li>Data visualization</li>
+                        <li>Statistical analysis</li>
+                        <li>Real-world case studies</li>
+                    </ul>
+                `;
+            } else if (courseTitle === 'Digital Photography Masterclass') {
+                content = `
+                    <p><strong>Category:</strong> Photography</p>
+                    <p><strong>Instructor:</strong> Michael Brown</p>
+                    <p><strong>Price:</strong> $69.99</p>
+                    <p><strong>Rating:</strong> ★ 4.9 (2,103 students)</p>
+                    <p style="margin-top: 1rem;">A complete guide to digital photography from camera basics to advanced composition techniques.</p>
+                    <h4 style="margin: 1.5rem 0 0.5rem;">What you'll learn:</h4>
+                    <ul style="padding-left: 1.5rem;">
+                        <li>Camera settings and modes</li>
+                        <li>Lighting techniques</li>
+                        <li>Composition rules</li>
+                        <li>Photo editing basics</li>
+                        <li>Building a portfolio</li>
+                    </ul>
+                `;
+            }
+            
+            courseModalContent.innerHTML = content;
+            openModal('course-modal');
+        }
+        
+        function enrollInCourse() {
+            closeModal('course-modal');
+            showToast('Course enrollment successful!');
+        }
+        
+        // Plan selection
+        function selectPlan(planName) {
+            document.getElementById('selected-plan').value = planName;
+            document.getElementById('plan-modal-title').textContent = `Subscribe to ${planName} Plan`;
+            openModal('plan-modal');
+        }
+        
+        // Form submissions
+        function submitSignupForm(e) {
+            e.preventDefault();
+            closeModal('signup-modal');
+            showToast('Account created successfully! Welcome to LearnHub.');
+            // In a real app, you would send this data to your backend
+            console.log('Signup form submitted:', {
+                name: document.getElementById('name').value,
+                email: document.getElementById('email').value,
+                expertise: document.getElementById('expertise').value
+            });
+        }
+        
+        function submitPaymentForm(e) {
+            e.preventDefault();
+            closeModal('plan-modal');
+            const plan = document.getElementById('selected-plan').value;
+            showToast(`Thank you for subscribing to our ${plan} plan!`);
+            // In a real app, you would process payment here
+            console.log('Payment form submitted for plan:', plan);
+        }
+        
+        function subscribeNewsletter(e) {
+            e.preventDefault();
+            const email = document.getElementById('newsletter-email').value;
+            showToast('Thanks for subscribing to our newsletter!');
+            // In a real app, you would send this email to your mailing list
+            console.log('Newsletter subscription:', email);
+            document.getElementById('newsletter-email').value = '';
+        }
+        
+        // Toast notification
+        function showToast(message) {
+            const toast = document.getElementById('toast-message');
+            toast.textContent = message;
+            toast.classList.add('show');
+            
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, 3000);
+        }
+    </script>
+</body>
+</html>'''
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8888))
-    app = make_app()
-    app.listen(port, address='0.0.0.0')
-    logger.info(f"✅ Tornado running on http://0.0.0.0:{port}")
-    logger.info(f"✅ Local access: http://localhost:{port}")
-    logger.info("🚀 Application started successfully!")
-    try:
-        tornado.ioloop.IOLoop.current().start()
-    except KeyboardInterrupt:
-        logger.info("👋 Application stopped by user")
+@app.route('/')
+def index():
+    return render_template_string(HTML_TEMPLATE)
+
+@app.route('/api/signup', methods=['POST'])
+def signup():
+    data = request.json
+    # Here you would typically save to database
+    return jsonify({'status': 'success', 'message': 'Account created successfully'})
+
+@app.route('/api/subscribe', methods=['POST'])
+def subscribe():
+    data = request.json
+    # Here you would typically process payment
+    return jsonify({'status': 'success', 'message': 'Subscription successful'})
+
+@app.route('/api/newsletter', methods=['POST'])
+def newsletter():
+    data = request.json
+    # Here you would typically add to mailing list
+    return jsonify({'status': 'success', 'message': 'Newsletter subscription successful'})
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=True)
