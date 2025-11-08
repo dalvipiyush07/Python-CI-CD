@@ -5,7 +5,6 @@ pipeline {
         REMOTE_HOST = "13.204.86.75"
         REMOTE_USER = "ubuntu"
         REMOTE_DIR = "/home/ubuntu/learnhub-app"
-        APP_PORT = "5000"
     }
     
     stages {
