@@ -2,7 +2,7 @@ pipeline {
     agent any
     
     environment {
-        REMOTE_HOST = "3.110.168.120"
+        REMOTE_HOST = "13.204.86.75"
         REMOTE_USER = "ubuntu"
         REMOTE_DIR = "/home/ubuntu/learnhub-app"
         APP_PORT = "5000"
